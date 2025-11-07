@@ -23,14 +23,14 @@ struct z_erofs_decompressor {
 	 * it also check whether destpages indicate continuous physical memory.
 	 */
 	int (*prepare_destpages)(struct z_erofs_decompress_req *rq,
-				 struct list_head *pagepool);
+							 struct list_head *pagepool);
 	int (*decompress)(struct z_erofs_decompress_req *rq, u8 *out);
 	char *name;
 };
 
 int z_erofs_load_lz4_config(struct super_block *sb,
-			    struct erofs_super_block *dsb,
-			    struct z_erofs_lz4_cfgs *lz4, int size)
+							struct erofs_super_block *dsb,
+							struct z_erofs_lz4_cfgs *lz4, int size)
 {
 	struct erofs_sb_info *sbi = EROFS_SB(sb);
 	u16 distance;
@@ -46,87 +46,87 @@ int z_erofs_load_lz4_config(struct super_block *sb,
 		if (!sbi->lz4.max_pclusterblks) {
 			sbi->lz4.max_pclusterblks = 1;	/* reserved case */
 		} else if (sbi->lz4.max_pclusterblks >
-			   Z_EROFS_PCLUSTER_MAX_SIZE / EROFS_BLKSIZ) {
+			Z_EROFS_PCLUSTER_MAX_SIZE / EROFS_BLKSIZ) {
 			erofs_err(sb, "too large lz4 pclusterblks %u",
-				  sbi->lz4.max_pclusterblks);
+					  sbi->lz4.max_pclusterblks);
 			return -EINVAL;
-		} else if (sbi->lz4.max_pclusterblks >= 2) {
-			erofs_info(sb, "EXPERIMENTAL big pcluster feature in use. Use at your own risk!");
-		}
+			} else if (sbi->lz4.max_pclusterblks >= 2) {
+				erofs_info(sb, "EXPERIMENTAL big pcluster feature in use. Use at your own risk!");
+			}
 	} else {
 		distance = le16_to_cpu(dsb->u1.lz4_max_distance);
 		sbi->lz4.max_pclusterblks = 1;
 	}
 
 	sbi->lz4.max_distance_pages = distance ?
-					DIV_ROUND_UP(distance, PAGE_SIZE) + 1 :
-					LZ4_MAX_DISTANCE_PAGES;
+	DIV_ROUND_UP(distance, PAGE_SIZE) + 1 :
+	LZ4_MAX_DISTANCE_PAGES;
 	return erofs_pcpubuf_growsize(sbi->lz4.max_pclusterblks);
 }
 
 static int z_erofs_lz4_prepare_destpages(struct z_erofs_decompress_req *rq,
-					 struct list_head *pagepool)
+										 struct list_head *pagepool)
 {
 	const unsigned int nr =
-		PAGE_ALIGN(rq->pageofs_out + rq->outputsize) >> PAGE_SHIFT;
+	PAGE_ALIGN(rq->pageofs_out + rq->outputsize) >> PAGE_SHIFT;
 	struct page *availables[LZ4_MAX_DISTANCE_PAGES] = { NULL };
 	unsigned long bounced[DIV_ROUND_UP(LZ4_MAX_DISTANCE_PAGES,
-					   BITS_PER_LONG)] = { 0 };
-	unsigned int lz4_max_distance_pages =
-				EROFS_SB(rq->sb)->lz4.max_distance_pages;
-	void *kaddr = NULL;
-	unsigned int i, j, top;
+									   BITS_PER_LONG)] = { 0 };
+									   unsigned int lz4_max_distance_pages =
+									   EROFS_SB(rq->sb)->lz4.max_distance_pages;
+									   void *kaddr = NULL;
+									   unsigned int i, j, top;
 
-	top = 0;
-	for (i = j = 0; i < nr; ++i, ++j) {
-		struct page *const page = rq->out[i];
-		struct page *victim;
+									   top = 0;
+									   for (i = j = 0; i < nr; ++i, ++j) {
+										   struct page *const page = rq->out[i];
+										   struct page *victim;
 
-		if (j >= lz4_max_distance_pages)
-			j = 0;
+										   if (j >= lz4_max_distance_pages)
+											   j = 0;
 
-		/* 'valid' bounced can only be tested after a complete round */
-		if (test_bit(j, bounced)) {
-			DBG_BUGON(i < lz4_max_distance_pages);
-			DBG_BUGON(top >= lz4_max_distance_pages);
-			availables[top++] = rq->out[i - lz4_max_distance_pages];
-		}
+										   /* 'valid' bounced can only be tested after a complete round */
+										   if (test_bit(j, bounced)) {
+											   DBG_BUGON(i < lz4_max_distance_pages);
+											   DBG_BUGON(top >= lz4_max_distance_pages);
+											   availables[top++] = rq->out[i - lz4_max_distance_pages];
+										   }
 
-		if (page) {
-			__clear_bit(j, bounced);
-			if (!PageHighMem(page)) {
-				if (!i) {
-					kaddr = page_address(page);
-					continue;
-				}
-				if (kaddr &&
-				    kaddr + PAGE_SIZE == page_address(page)) {
-					kaddr += PAGE_SIZE;
-					continue;
-				}
-			}
-			kaddr = NULL;
-			continue;
-		}
-		kaddr = NULL;
-		__set_bit(j, bounced);
+										   if (page) {
+											   __clear_bit(j, bounced);
+											   if (!PageHighMem(page)) {
+												   if (!i) {
+													   kaddr = page_address(page);
+													   continue;
+												   }
+												   if (kaddr &&
+													   kaddr + PAGE_SIZE == page_address(page)) {
+													   kaddr += PAGE_SIZE;
+												   continue;
+													   }
+											   }
+											   kaddr = NULL;
+											   continue;
+										   }
+										   kaddr = NULL;
+										   __set_bit(j, bounced);
 
-		if (top) {
-			victim = availables[--top];
-			get_page(victim);
-		} else {
-			victim = erofs_allocpage(pagepool,
-						 GFP_KERNEL | __GFP_NOFAIL);
-			set_page_private(victim, Z_EROFS_SHORTLIVED_PAGE);
-		}
-		rq->out[i] = victim;
-	}
-	return kaddr ? 1 : 0;
+										   if (top) {
+											   victim = availables[--top];
+											   get_page(victim);
+										   } else {
+											   victim = erofs_allocpage(pagepool,
+																		GFP_KERNEL | __GFP_NOFAIL);
+											   set_page_private(victim, Z_EROFS_SHORTLIVED_PAGE);
+										   }
+										   rq->out[i] = victim;
+									   }
+									   return kaddr ? 1 : 0;
 }
 
 static void *z_erofs_handle_inplace_io(struct z_erofs_decompress_req *rq,
-			void *inpage, unsigned int *inputmargin, int *maptype,
-			bool support_0padding)
+									   void *inpage, unsigned int *inputmargin, int *maptype,
+									   bool support_0padding)
 {
 	unsigned int nrpages_in, nrpages_out;
 	unsigned int ofull, oend, inputsize, total, i, j;
@@ -141,7 +141,7 @@ static void *z_erofs_handle_inplace_io(struct z_erofs_decompress_req *rq,
 
 	if (rq->inplace_io) {
 		if (rq->partial_decoding || !support_0padding ||
-		    ofull - oend < LZ4_DECOMPRESS_INPLACE_MARGIN(inputsize))
+			ofull - oend < LZ4_DECOMPRESS_INPLACE_MARGIN(inputsize))
 			goto docopy;
 
 		for (i = 0; i < nrpages_in; ++i) {
@@ -164,7 +164,7 @@ static void *z_erofs_handle_inplace_io(struct z_erofs_decompress_req *rq,
 	*maptype = 1;
 	return src;
 
-docopy:
+	docopy:
 	/* Or copy compressed data which can be overlapped to per-CPU buffer */
 	in = rq->in;
 	src = erofs_get_pcpubuf(nrpages_in);
@@ -178,7 +178,7 @@ docopy:
 	total = rq->inputsize;
 	while (total) {
 		unsigned int page_copycnt =
-			min_t(unsigned int, total, PAGE_SIZE - *inputmargin);
+		min_t(unsigned int, total, PAGE_SIZE - *inputmargin);
 
 		if (!inpage)
 			inpage = kmap_atomic(*in);
@@ -222,43 +222,43 @@ static int z_erofs_lz4_decompress(struct z_erofs_decompress_req *rq, u8 *out)
 
 	rq->inputsize -= inputmargin;
 	src = z_erofs_handle_inplace_io(rq, headpage, &inputmargin, &maptype,
-					support_0padding);
+									support_0padding);
 	if (IS_ERR(src))
 		return PTR_ERR(src);
 
 	/* legacy format could compress extra data in a pcluster. */
 	if (rq->partial_decoding || !support_0padding)
 		ret = LZ4_decompress_safe_partial(src + inputmargin, out,
-				rq->inputsize, rq->outputsize, rq->outputsize);
-	else
-		ret = LZ4_decompress_safe(src + inputmargin, out,
-					  rq->inputsize, rq->outputsize);
+										  rq->inputsize, rq->outputsize, rq->outputsize);
+		else
+			ret = LZ4_decompress_safe(src + inputmargin, out,
+									  rq->inputsize, rq->outputsize);
 
-	if (ret != rq->outputsize) {
-		erofs_err(rq->sb, "failed to decompress %d in[%u, %u] out[%u]",
-			  ret, rq->inputsize, inputmargin, rq->outputsize);
+			if (ret != rq->outputsize) {
+				erofs_err(rq->sb, "failed to decompress %d in[%u, %u] out[%u]",
+						  ret, rq->inputsize, inputmargin, rq->outputsize);
 
-		print_hex_dump(KERN_DEBUG, "[ in]: ", DUMP_PREFIX_OFFSET,
-			       16, 1, src + inputmargin, rq->inputsize, true);
-		print_hex_dump(KERN_DEBUG, "[out]: ", DUMP_PREFIX_OFFSET,
-			       16, 1, out, rq->outputsize, true);
+				print_hex_dump(KERN_DEBUG, "[ in]: ", DUMP_PREFIX_OFFSET,
+							   16, 1, src + inputmargin, rq->inputsize, true);
+				print_hex_dump(KERN_DEBUG, "[out]: ", DUMP_PREFIX_OFFSET,
+							   16, 1, out, rq->outputsize, true);
 
-		if (ret >= 0)
-			memset(out + ret, 0, rq->outputsize - ret);
-		ret = -EIO;
-	}
+				if (ret >= 0)
+					memset(out + ret, 0, rq->outputsize - ret);
+				ret = -EIO;
+			}
 
-	if (maptype == 0) {
-		kunmap_atomic(src);
-	} else if (maptype == 1) {
-		vm_unmap_ram(src, PAGE_ALIGN(rq->inputsize) >> PAGE_SHIFT);
-	} else if (maptype == 2) {
-		erofs_put_pcpubuf(src);
-	} else {
-		DBG_BUGON(1);
-		return -EFAULT;
-	}
-	return ret;
+			if (maptype == 0) {
+				kunmap_atomic(src);
+			} else if (maptype == 1) {
+				vm_unmap_ram(src, PAGE_ALIGN(rq->inputsize) >> PAGE_SHIFT);
+			} else if (maptype == 2) {
+				erofs_put_pcpubuf(src);
+			} else {
+				DBG_BUGON(1);
+				return -EFAULT;
+			}
+			return ret;
 }
 
 static struct z_erofs_decompressor decompressors[] = {
@@ -273,8 +273,8 @@ static struct z_erofs_decompressor decompressors[] = {
 };
 
 static void copy_from_pcpubuf(struct page **out, const char *dst,
-			      unsigned short pageofs_out,
-			      unsigned int outputsize)
+							  unsigned short pageofs_out,
+							  unsigned int outputsize)
 {
 	const char *end = dst + outputsize;
 	const unsigned int righthalf = PAGE_SIZE - pageofs_out;
@@ -288,10 +288,10 @@ static void copy_from_pcpubuf(struct page **out, const char *dst,
 
 			if (cur >= dst) {
 				memcpy(buf, cur, min_t(uint, PAGE_SIZE,
-						       end - cur));
+									   end - cur));
 			} else {
 				memcpy(buf + pageofs_out, cur + pageofs_out,
-				       min_t(uint, righthalf, end - cur));
+					   min_t(uint, righthalf, end - cur));
 			}
 			kunmap_atomic(buf);
 		}
@@ -300,10 +300,10 @@ static void copy_from_pcpubuf(struct page **out, const char *dst,
 }
 
 static int z_erofs_decompress_generic(struct z_erofs_decompress_req *rq,
-				      struct list_head *pagepool)
+									  struct list_head *pagepool)
 {
 	const unsigned int nrpages_out =
-		PAGE_ALIGN(rq->pageofs_out + rq->outputsize) >> PAGE_SHIFT;
+	PAGE_ALIGN(rq->pageofs_out + rq->outputsize) >> PAGE_SHIFT;
 	const struct z_erofs_decompressor *alg = decompressors + rq->alg;
 	unsigned int dst_maptype;
 	void *dst;
@@ -332,9 +332,9 @@ static int z_erofs_decompress_generic(struct z_erofs_decompress_req *rq,
 			ret = alg->decompress(rq, dst);
 			if (!ret)
 				copy_from_pcpubuf(rq->out, dst, rq->pageofs_out,
-						  rq->outputsize);
+								  rq->outputsize);
 
-			erofs_put_pcpubuf(dst);
+				erofs_put_pcpubuf(dst);
 			return ret;
 		}
 	}
@@ -354,7 +354,7 @@ static int z_erofs_decompress_generic(struct z_erofs_decompress_req *rq,
 		return -ENOMEM;
 	dst_maptype = 2;
 
-dstmap_out:
+	dstmap_out:
 	ret = alg->decompress(rq, dst + rq->pageofs_out);
 
 	if (!dst_maptype)
@@ -365,10 +365,10 @@ dstmap_out:
 }
 
 static int z_erofs_shifted_transform(const struct z_erofs_decompress_req *rq,
-				     struct list_head *pagepool)
+									 struct list_head *pagepool)
 {
 	const unsigned int nrpages_out =
-		PAGE_ALIGN(rq->pageofs_out + rq->outputsize) >> PAGE_SHIFT;
+	PAGE_ALIGN(rq->pageofs_out + rq->outputsize) >> PAGE_SHIFT;
 	const unsigned int righthalf = PAGE_SIZE - rq->pageofs_out;
 	unsigned char *src, *dst;
 
@@ -404,10 +404,9 @@ static int z_erofs_shifted_transform(const struct z_erofs_decompress_req *rq,
 }
 
 int z_erofs_decompress(struct z_erofs_decompress_req *rq,
-		       struct list_head *pagepool)
+					   struct list_head *pagepool)
 {
 	if (rq->alg == Z_EROFS_COMPRESSION_SHIFTED)
 		return z_erofs_shifted_transform(rq, pagepool);
 	return z_erofs_decompress_generic(rq, pagepool);
 }
-
