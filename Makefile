@@ -1349,6 +1349,7 @@ quiet_cmd_headers_install = INSTALL $(INSTALL_HDR_PATH)/include
 PHONY += headers_install
 headers_install: headers
 	$(call cmd,headers_install)
+	@find $(O)/usr/include -type f -name "*.h" -exec sed -i 's/struct sched_param/struct __kernel_sched_param/g' {} +
 
 PHONY += archheaders archscripts
 
