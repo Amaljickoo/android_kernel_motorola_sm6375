@@ -3164,6 +3164,9 @@ CONFIG_CEC_PIN=y
 # CONFIG_RC_CORE is not set
 CONFIG_MEDIA_SUPPORT=y
 
+# FM
+CONFIG_RADIO_ELNA=m
+
 #
 # Multimedia core support
 #
