@@ -1,4 +1,4 @@
-config CW2217B_FG
+config CW2217B_FG_MMI
         tristate "CW2217B Fuel Guage"
         default n
         help
