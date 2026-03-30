@@ -9,7 +9,7 @@ jobs:
 
     steps:
     - name: Checkout Source
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: Install Dependencies
       run: |
@@ -27,7 +27,7 @@ jobs:
 
     - name: Add SukiSU Ultra
       run: |
-        git clone https://github.com/sukisu-ultra/KernelSU.git KernelSU
+        git clone https://github.com/tiann/KernelSU.git KernelSU
         cd KernelSU
         chmod +x setup.sh
         bash setup.sh
