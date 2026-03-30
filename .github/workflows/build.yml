@@ -8,70 +8,207 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout Source
-      uses: actions/checkout@v4
+      - name: Checkout Source
+        uses: actions/checkout@v4
 
-    - name: Install Dependencies
-      run: |
-        sudo apt update
-        sudo apt install -y bc bison build-essential curl flex git kmod libssl-dev libelf-dev gcc-aarch64-linux-gnu
+      - name: Install Dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y bc bison build-essential curl flex git kmod libssl-dev libelf-dev gcc-aarch64-linux-gnu
 
-    - name: Setup Toolchain (Proton Clang)
-      run: |
-        git clone https://github.com/kdrag0n/proton-clang.git --depth=1
+      - name: Setup Toolchain (Proton Clang)
+        run: |
+          git clone https://github.com/kdrag0n/proton-clang.git --depth=1
 
-    - name: Integrate KernelSU
-      run: |
-        curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash -
+      - name: Integrate KernelSU
+        run: |
+          curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash -
 
-    - name: Create KernelSU Directories and Files
-      run: |
-        mkdir -p drivers/kernelsu/{core,policy,selinux,uapi}
+      - name: Create KernelSU Directories
+        run: |
+          mkdir -p drivers/kernelsu/core
+          mkdir -p drivers/kernelsu/policy
+          mkdir -p drivers/kernelsu/selinux
+          mkdir -p drivers/kernelsu/uapi
 
-    - name: Create Kconfig
-      run: |
-        cat > drivers/kernelsu/Kconfig << 'EOF'
-config KERNELSU
-	bool "KernelSU"
-	default n
-	help
-	  KernelSU module
+      - name: Create Kconfig File
+        run: |
+          cat > drivers/kernelsu/Kconfig << 'KEOF'
+          config KERNELSU
+          	bool "KernelSU"
+          	default n
+          	help
+          	  KernelSU module
+          
+          config KERNELSU_MANAGER
+          	bool "KernelSU Manager"
+          	depends on KERNELSU
+          	default n
+          
+          config KSU_DEBUG
+          	bool "KernelSU Debug"
+          	depends on KERNELSU
+          	default n
+          KEOF
 
-config KERNELSU_MANAGER
-	bool "KernelSU Manager"
-	depends on KERNELSU
-	default n
+      - name: Create app_profile.h Header
+        run: |
+          cat > drivers/kernelsu/uapi/app_profile.h << 'HEOF'
+          #ifndef _KERNELSU_UAPI_APP_PROFILE_H
+          #define _KERNELSU_UAPI_APP_PROFILE_H
+          
+          #include <linux/types.h>
+          
+          #define KSU_MAX_PACKAGE_NAME 128
+          #define KSU_MAX_GROUPS 32
+          #define KSU_SELINUX_DOMAIN 64
+          
+          struct ksu_capabilities {
+              __u32 effective;
+              __u32 permitted;
+              __u32 inheritable;
+          };
+          
+          struct root_profile {
+              __s32 uid;
+              __s32 gid;
+              __s32 groups_count;
+              __s32 groups[KSU_MAX_GROUPS];
+              struct ksu_capabilities capabilities;
+              char selinux_domain[KSU_SELINUX_DOMAIN];
+              __s32 namespaces;
+          };
+          
+          struct non_root_profile {
+              __u8 umount_modules;
+          };
+          
+          struct app_profile {
+              __u32 version;
+              char key[KSU_MAX_PACKAGE_NAME];
+              __s32 current_uid;
+              __u8 allow_su;
+              union {
+                  struct root_profile rp_config;
+                  struct non_root_profile nrp_config;
+              };
+          };
+          
+          #endif
+          HEOF
 
-config KSU_DEBUG
-	bool "KernelSU Debug"
-	depends on KERNELSU
-	default n
-EOF
+      - name: Create Main Makefile
+        run: |
+          cat > drivers/kernelsu/Makefile << 'MEOF'
+          obj-$(CONFIG_KERNELSU) += core/
+          obj-$(CONFIG_KERNELSU) += policy/
+          obj-$(CONFIG_KERNELSU) += selinux/
+          MEOF
 
-    - name: Create app_profile.h
-      run: |
-        cat > drivers/kernelsu/uapi/app_profile.h << 'EOF'
-#ifndef _KERNELSU_UAPI_APP_PROFILE_H
-#define _KERNELSU_UAPI_APP_PROFILE_H
+      - name: Create Core Makefile
+        run: |
+          cat > drivers/kernelsu/core/Makefile << 'MEOF'
+          obj-y := init.o
+          MEOF
 
-#include <linux/types.h>
+      - name: Create Core init.c
+        run: |
+          cat > drivers/kernelsu/core/init.c << 'CEOF'
+          #include <linux/init.h>
+          #include <linux/module.h>
+          #include <linux/kernel.h>
+          
+          static int __init kernelsu_init(void)
+          {
+              pr_info("KernelSU: Loading\n");
+              return 0;
+          }
+          
+          static void __exit kernelsu_exit(void)
+          {
+              pr_info("KernelSU: Unloading\n");
+          }
+          
+          module_init(kernelsu_init);
+          module_exit(kernelsu_exit);
+          MODULE_LICENSE("GPL");
+          CEOF
 
-#define KSU_MAX_PACKAGE_NAME 128
-#define KSU_MAX_GROUPS 32
-#define KSU_SELINUX_DOMAIN 64
+      - name: Create Policy Makefile
+        run: |
+          cat > drivers/kernelsu/policy/Makefile << 'MEOF'
+          obj-y := allowlist.o
+          MEOF
 
-struct ksu_capabilities {
-	__u32 effective;
-	__u32 permitted;
-	__u32 inheritable;
-};
+      - name: Create Policy Header
+        run: |
+          cat > drivers/kernelsu/policy/allowlist.h << 'HEOF'
+          #ifndef _KSU_ALLOWLIST_H_
+          #define _KSU_ALLOWLIST_H_
+          
+          #include "../uapi/app_profile.h"
+          
+          int ksu_allowlist_init(void);
+          void ksu_allowlist_exit(void);
+          
+          #endif
+          HEOF
 
-struct root_profile {
-	__s32 uid;
-	__s32 gid;
-	__s32 groups_count;
-	__s32 groups[KSU_MAX_GROUPS];
-	struct ksu_capabilities capabilities;
-	char selinux_domain[KSU_SELINUX_DOMAIN];
-	__s32 namespaces;
-
+      - name: Create Policy Source
+        run: |
+          cat > drivers/kernelsu/policy/allowlist.c << 'CEOF'
+          #include <linux/init.h>
+          #include <linux/kernel.h>
+          #include "allowlist.h"
+          
+          int ksu_allowlist_init(void)
+          {
+              return 0;
+          }
+          
+          void ksu_allowlist_exit(void)
+          {
+          }
+          CEOF
+
+      - name: Create SELinux Makefile
+        run: |
+          cat > drivers/kernelsu/selinux/Makefile << 'MEOF'
+          obj-y := policy.o
+          MEOF
+
+      - name: Create SELinux Policy
+        run: |
+          cat > drivers/kernelsu/selinux/policy.c << 'CEOF'
+          #include <linux/init.h>
+          #include <linux/kernel.h>
+          
+          int ksu_selinux_init(void)
+          {
+              return 0;
+          }
+          
+          void ksu_selinux_exit(void)
+          {
+          }
+          CEOF
+
+      - name: Prepare Kernel Configuration
+        run: |
+          export ARCH=arm64
+          export SUBARCH=arm64
+          make O=out ARCH=arm64 vendor/fogos_defconfig
+
+      - name: Build Kernel
+        run: |
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CLANG=$PWD/proton-clang/bin/clang
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          make -j$(nproc) O=out ARCH=arm64 CC=$CLANG CLANG_TRIPLE=$CLANG_TRIPLE CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+
+      - name: Upload Kernel Image
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-image
+          path: out/arch/arm64/boot/Image
