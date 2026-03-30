@@ -36,20 +36,16 @@ jobs:
           cd KernelSU && patch -p1 < 10_enable_susfs_for_ksu.patch && cd ..
           patch -p1 < susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch || true
 
-      - name: List Available Configs (Debugging)
-        run: |
-          echo "Searching for any config files related to fogos or sm6375..."
-          find arch/arm64/configs/ -name "*defconfig" | grep -E "fogos|holi|sm6375" || find arch/arm64/configs/ -name "*defconfig" | head -n 20
-
       - name: Configure Kernel
         run: |
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           
-          # AUTOMATIC DISCOVERY: Look for fogos_defconfig anywhere in arch/arm64/configs
-          # If it doesn't find 'fogos_defconfig', it will try 'vendor/holi-moto_defconfig' (Lineage standard)
+          # This is the 'magic' combo for this specific repo:
+          # It uses the discovery logic you had that worked.
           CONF_PATH=$(find arch/arm64/configs/ -name "fogos_defconfig" | sed 's|arch/arm64/configs/||')
           if [ -z "$CONF_PATH" ]; then
+            # Fallback to the holi-moto if fogos isn't found
             CONF_PATH="vendor/holi-moto_defconfig"
           fi
           
@@ -64,7 +60,7 @@ jobs:
           ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS
           ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS_HAS_MAGIC_MOUNT
           
-          # Disable strict checks for Stock Wi-Fi modules
+          # WIFI FIX: Disable strict checks for Stock Wi-Fi modules
           ./scripts/config --file out/.config -d CONFIG_MODVERSIONS
           ./scripts/config --file out/.config -d CONFIG_MODULE_SIG
           ./scripts/config --file out/.config -d CONFIG_MODULE_SIG_ALL
@@ -76,6 +72,7 @@ jobs:
           export ARCH=arm64
           CLANG_BIN=$PWD/tools/clang/bin
           
+          # Using the full-path CC and HOSTCC=gcc to prevent the .relr.dyn error
           make -j$(nproc) O=out \
             ARCH=arm64 \
             CC=$CLANG_BIN/clang \
