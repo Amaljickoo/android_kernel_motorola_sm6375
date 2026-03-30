@@ -1,4 +1,4 @@
-name: Build Kernel (SukiSU Ultra)
+name: Build Kernel (KernelSU Ready)
 
 on:
   workflow_dispatch:
@@ -25,13 +25,9 @@ jobs:
       run: |
         git clone https://github.com/kdrag0n/proton-clang.git --depth=1
 
-    - name: Add SukiSU Ultra
+    - name: Add KernelSU (basic)
       run: |
         git clone https://github.com/tiann/KernelSU.git KernelSU
-        cd KernelSU
-        chmod +x setup.sh
-        bash setup.sh
-        cd ..
 
     - name: Build Kernel
       run: |
