@@ -25,7 +25,7 @@ jobs:
       run: |
         git clone https://github.com/kdrag0n/proton-clang.git --depth=1
 
-    - name: Add KernelSU (basic)
+    - name: Add KernelSU
       run: |
         git clone https://github.com/tiann/KernelSU.git KernelSU
 
@@ -36,7 +36,16 @@ jobs:
         export PATH=$PWD/proton-clang/bin:$PATH
 
         make O=out ARCH=arm64 vendor/gki_defconfig
-        make -j$(nproc) O=out ARCH=arm64 CC=clang
+
+        make -j$(nproc) O=out \
+          ARCH=arm64 \
+          CC=clang \
+          LD=ld.lld \
+          AR=llvm-ar \
+          NM=llvm-nm \
+          OBJCOPY=llvm-objcopy \
+          OBJDUMP=llvm-objdump \
+          STRIP=llvm-strip
 
     - name: Upload Kernel
       uses: actions/upload-artifact@v4
