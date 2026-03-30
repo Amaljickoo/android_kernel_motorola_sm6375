@@ -1,4 +1,4 @@
-name: Build Kernel (Moto G45 - fogos)
+name: Build Kernel (Moto G45 - FINAL FIX)
 
 on:
   workflow_dispatch:
@@ -31,14 +31,16 @@ jobs:
 
         export CLANG_PATH=$PWD/proton-clang/bin
 
-        # ✅ CORRECT PATH
+        # ✅ Add clang tools ONLY for build step
+        export PATH=$CLANG_PATH:$PATH
+
+        # ✅ Correct defconfig
         make O=out ARCH=arm64 vendor/fogos_defconfig
 
+        # ✅ Use full LLVM properly
         make -j$(nproc) O=out \
           ARCH=arm64 \
-          CC=$CLANG_PATH/clang \
-          CROSS_COMPILE=aarch64-linux-gnu- \
-          CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+          CC=clang \
           LLVM=1 \
           LLVM_IAS=1
 
