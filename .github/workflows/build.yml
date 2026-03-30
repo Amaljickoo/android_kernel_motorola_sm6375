@@ -1,4 +1,4 @@
-name: Build Kernel (Moto G45 - FINAL FIX)
+name: Build Kernel (Moto G45 - FINAL STABLE)
 
 on:
   workflow_dispatch:
@@ -29,20 +29,18 @@ jobs:
         export ARCH=arm64
         export SUBARCH=arm64
 
-        export CLANG_PATH=$PWD/proton-clang/bin
+        # ❌ DO NOT TOUCH GLOBAL PATH
+        CLANG=$PWD/proton-clang/bin/clang
 
-        # ✅ Add clang tools ONLY for build step
-        export PATH=$CLANG_PATH:$PATH
-
-        # ✅ Correct defconfig
+        # ✅ Step 1: config (uses system tools)
         make O=out ARCH=arm64 vendor/fogos_defconfig
 
-        # ✅ Use full LLVM properly
+        # ✅ Step 2: build (explicit clang only)
         make -j$(nproc) O=out \
           ARCH=arm64 \
-          CC=clang \
-          LLVM=1 \
-          LLVM_IAS=1
+          CC=$CLANG \
+          CROSS_COMPILE=aarch64-linux-gnu- \
+          CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
     - name: Upload Kernel
       uses: actions/upload-artifact@v4
