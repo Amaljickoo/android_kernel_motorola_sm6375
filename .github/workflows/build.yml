@@ -36,13 +36,25 @@ jobs:
           cd KernelSU && patch -p1 < 10_enable_susfs_for_ksu.patch && cd ..
           patch -p1 < susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch || true
 
+      - name: List Available Configs (Debugging)
+        run: |
+          echo "Searching for any config files related to fogos or sm6375..."
+          find arch/arm64/configs/ -name "*defconfig" | grep -E "fogos|holi|sm6375" || find arch/arm64/configs/ -name "*defconfig" | head -n 20
+
       - name: Configure Kernel
         run: |
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           
-          # Try vendor folder first, then main configs folder
-          make O=out ARCH=arm64 vendor/fogos_defconfig || make O=out ARCH=arm64 fogos_defconfig
+          # AUTOMATIC DISCOVERY: Look for fogos_defconfig anywhere in arch/arm64/configs
+          # If it doesn't find 'fogos_defconfig', it will try 'vendor/holi-moto_defconfig' (Lineage standard)
+          CONF_PATH=$(find arch/arm64/configs/ -name "fogos_defconfig" | sed 's|arch/arm64/configs/||')
+          if [ -z "$CONF_PATH" ]; then
+            CONF_PATH="vendor/holi-moto_defconfig"
+          fi
+          
+          echo "Using Config: $CONF_PATH"
+          make O=out ARCH=arm64 "$CONF_PATH"
           
           # Match Stock Versioning (Wi-Fi Fix)
           sed -i "s/^SUBLEVEL = .*/SUBLEVEL = 274/" Makefile
@@ -64,7 +76,6 @@ jobs:
           export ARCH=arm64
           CLANG_BIN=$PWD/tools/clang/bin
           
-          # HOSTCC=gcc is the "secret sauce" to avoid the .relr.dyn error
           make -j$(nproc) O=out \
             ARCH=arm64 \
             CC=$CLANG_BIN/clang \
