@@ -100,6 +100,6 @@ jobs:
 
     - name: Create Makefile for KernelSU
       run: |
-        cat > drivers/kernelsu/Makefile << 'MAKE_EOF'
-        obj-$(CONFIG_KERNELSU) += core
+        cat > drivers/kernelsu/Makefile << 'MAKEFILE_EOF'
+        obj-$(CONFIG_KERNELSU) += core/
 
