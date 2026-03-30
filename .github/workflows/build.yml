@@ -1,4 +1,4 @@
-name: Build Kernel (Moto G45 - FINAL STABLE)
+name: Build Kernel (Moto G45 + KernelSU)
 
 on:
   workflow_dispatch:
@@ -20,22 +20,20 @@ jobs:
       run: |
         git clone https://github.com/kdrag0n/proton-clang.git --depth=1
 
-    - name: Add KernelSU
+    # 🔥 REAL KernelSU Integration
+    - name: Integrate KernelSU
       run: |
-        git clone https://github.com/tiann/KernelSU.git KernelSU
+        curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash -
 
     - name: Build Kernel
       run: |
         export ARCH=arm64
         export SUBARCH=arm64
 
-        # ❌ DO NOT TOUCH GLOBAL PATH
         CLANG=$PWD/proton-clang/bin/clang
 
-        # ✅ Step 1: config (uses system tools)
         make O=out ARCH=arm64 vendor/fogos_defconfig
 
-        # ✅ Step 2: build (explicit clang only)
         make -j$(nproc) O=out \
           ARCH=arm64 \
           CC=$CLANG \
