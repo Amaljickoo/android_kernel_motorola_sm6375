@@ -31,8 +31,8 @@ jobs:
 
         export CLANG_PATH=$PWD/proton-clang/bin
 
-        # ✅ YOUR REAL DEFCONFIG
-        make O=out ARCH=arm64 fogos_defconfig
+        # ✅ CORRECT PATH
+        make O=out ARCH=arm64 vendor/fogos_defconfig
 
         make -j$(nproc) O=out \
           ARCH=arm64 \
