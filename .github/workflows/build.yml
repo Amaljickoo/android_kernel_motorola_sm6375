@@ -20,28 +20,119 @@ jobs:
       run: |
         git clone https://github.com/kdrag0n/proton-clang.git --depth=1
 
+    # 🔥 Create Missing KernelSU Header File
+    - name: Create Missing KernelSU Header
+      run: |
+        mkdir -p drivers/kernelsu/uapi
+        cat > drivers/kernelsu/uapi/app_profile.h << 'EOF'
+#ifndef _KERNELSU_UAPI_APP_PROFILE_H
+#define _KERNELSU_UAPI_APP_PROFILE_H
+
+#include <linux/types.h>
+
+#define KSU_MAX_PACKAGE_NAME 128
+#define KSU_MAX_GROUPS 32
+#define KSU_SELINUX_DOMAIN 64
+
+struct ksu_capabilities {
+    __u32 effective;
+    __u32 permitted;
+    __u32 inheritable;
+};
+
+struct root_profile {
+    __s32 uid;
+    __s32 gid;
+    __s32 groups_count;
+    __s32 groups[KSU_MAX_GROUPS];
+    struct ksu_capabilities capabilities;
+    char selinux_domain[KSU_SELINUX_DOMAIN];
+    __s32 namespaces;
+};
+
+struct non_root_profile {
+    __u8 umount_modules;
+};
+
+struct app_profile {
+    __u32 version;
+    char key[KSU_MAX_PACKAGE_NAME];
+    __s32 current_uid;
+    __u8 allow_su;
+    union {
+        struct root_profile rp_config;
+        struct non_root_profile nrp_config;
+    };
+};
+
+#endif // _KERNELSU_UAPI_APP_PROFILE_H
+EOF
+        echo "✓ Created drivers/kernelsu/uapi/app_profile.h"
+
     # 🔥 REAL KernelSU Integration
     - name: Integrate KernelSU
       run: |
         curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash -
+        echo "✓ KernelSU integrated successfully"
+
+    - name: Prepare Kernel Configuration
+      run: |
+        export ARCH=arm64
+        export SUBARCH=arm64
+        
+        CLANG=$PWD/proton-clang/bin/clang
+        
+        echo "🔧 Loading defconfig..."
+        make O=out ARCH=arm64 vendor/fogos_defconfig
+        echo "✓ Defconfig loaded"
 
     - name: Build Kernel
       run: |
         export ARCH=arm64
         export SUBARCH=arm64
+        export PATH=$PWD/proton-clang/bin:$PATH
 
         CLANG=$PWD/proton-clang/bin/clang
+        CLANG_TRIPLE=aarch64-linux-gnu-
 
-        make O=out ARCH=arm64 vendor/fogos_defconfig
-
+        echo "🔨 Starting kernel build with $(nproc) cores..."
+        
         make -j$(nproc) O=out \
           ARCH=arm64 \
           CC=$CLANG \
+          CLANG_TRIPLE=$CLANG_TRIPLE \
           CROSS_COMPILE=aarch64-linux-gnu- \
-          CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+          CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+          2>&1 | tee build.log
 
-    - name: Upload Kernel
+        if [ $? -eq 0 ]; then
+          echo "✓ Kernel build completed successfully"
+        else
+          echo "✗ Kernel build failed"
+          tail -100 build.log
+          exit 1
+        fi
+
+    - name: Verify Build Output
+      run: |
+        if [ -f out/arch/arm64/boot/Image ]; then
+          echo "✓ Kernel image found"
+          ls -lh out/arch/arm64/boot/Image
+        else
+          echo "✗ Kernel image not found!"
+          exit 1
+        fi
+
+    - name: Upload Kernel Image
       uses: actions/upload-artifact@v4
       with:
         name: kernel-image
         path: out/arch/arm64/boot/Image
+        if-no-files-found: error
+
+    - name: Upload Build Log
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-log
+        path: build.log
