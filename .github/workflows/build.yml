@@ -1,4 +1,4 @@
-name: Build Kernel (Fixed Properly)
+name: Build Kernel (Detect Defconfig)
 
 on:
   workflow_dispatch:
@@ -24,15 +24,21 @@ jobs:
       run: |
         git clone https://github.com/tiann/KernelSU.git KernelSU
 
+    - name: Show Available Defconfigs
+      run: |
+        ls arch/arm64/configs/
+
     - name: Build Kernel
       run: |
         export ARCH=arm64
         export SUBARCH=arm64
 
-        # ❗ DO NOT override full PATH
         export CLANG_PATH=$PWD/proton-clang/bin
 
-        make O=out ARCH=arm64 vendor/gki_defconfig
+        # ❗ CHANGE THIS AFTER CHECKING ABOVE STEP
+        DEFCONFIG=vendor_defconfig
+
+        make O=out ARCH=arm64 $DEFCONFIG
 
         make -j$(nproc) O=out \
           ARCH=arm64 \
