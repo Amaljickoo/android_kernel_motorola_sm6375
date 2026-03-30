@@ -1,4 +1,4 @@
-name: Build Kernel (Moto G45 + KernelSU)
+name: Build Moto G45 (fogos) Stock-Safe Kernel
 
 on:
   workflow_dispatch:
@@ -6,209 +6,82 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout Source
+      - name: Checkout Kernel Source
         uses: actions/checkout@v4
+        with:
+          repository: LineageOS/android_kernel_motorola_sm6375
+          ref: lineage-22.1
+          fetch-depth: 1
 
-      - name: Install Dependencies
+      - name: Install Build Tools
         run: |
           sudo apt update
-          sudo apt install -y bc bison build-essential curl flex git kmod libssl-dev libelf-dev gcc-aarch64-linux-gnu
+          sudo apt install -y bc bison build-essential curl flex git kmod libssl-dev libelf-dev gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu pahole llvm lld
 
-      - name: Setup Toolchain (Proton Clang)
+      - name: Setup Proton Clang
         run: |
-          git clone https://github.com/kdrag0n/proton-clang.git --depth=1
+          git clone https://github.com/kdrag0n/proton-clang.git --depth=1 tools/clang
 
       - name: Integrate KernelSU
         run: |
-          curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash -
+          curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash -s main
 
-      - name: Create KernelSU Directories
+      - name: Integrate SUSFS
         run: |
-          mkdir -p drivers/kernelsu/core
-          mkdir -p drivers/kernelsu/policy
-          mkdir -p drivers/kernelsu/selinux
-          mkdir -p drivers/kernelsu/uapi
+          git clone https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 --depth=1 susfs_src
+          cp susfs_src/kernel_patches/fs/susfs.c fs/
+          cp susfs_src/kernel_patches/include/linux/susfs.h include/linux/
+          cp susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch KernelSU/
+          cd KernelSU && patch -p1 < 10_enable_susfs_for_ksu.patch && cd ..
+          patch -p1 < susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch || true
 
-      - name: Create Kconfig File
-        run: |
-          cat > drivers/kernelsu/Kconfig << 'KEOF'
-          config KERNELSU
-          	bool "KernelSU"
-          	default n
-          	help
-          	  KernelSU module
-          
-          config KERNELSU_MANAGER
-          	bool "KernelSU Manager"
-          	depends on KERNELSU
-          	default n
-          
-          config KSU_DEBUG
-          	bool "KernelSU Debug"
-          	depends on KERNELSU
-          	default n
-          KEOF
-
-      - name: Create app_profile.h Header
-        run: |
-          cat > drivers/kernelsu/uapi/app_profile.h << 'HEOF'
-          #ifndef _KERNELSU_UAPI_APP_PROFILE_H
-          #define _KERNELSU_UAPI_APP_PROFILE_H
-          
-          #include <linux/types.h>
-          
-          #define KSU_MAX_PACKAGE_NAME 128
-          #define KSU_MAX_GROUPS 32
-          #define KSU_SELINUX_DOMAIN 64
-          
-          struct ksu_capabilities {
-              __u32 effective;
-              __u32 permitted;
-              __u32 inheritable;
-          };
-          
-          struct root_profile {
-              __s32 uid;
-              __s32 gid;
-              __s32 groups_count;
-              __s32 groups[KSU_MAX_GROUPS];
-              struct ksu_capabilities capabilities;
-              char selinux_domain[KSU_SELINUX_DOMAIN];
-              __s32 namespaces;
-          };
-          
-          struct non_root_profile {
-              __u8 umount_modules;
-          };
-          
-          struct app_profile {
-              __u32 version;
-              char key[KSU_MAX_PACKAGE_NAME];
-              __s32 current_uid;
-              __u8 allow_su;
-              union {
-                  struct root_profile rp_config;
-                  struct non_root_profile nrp_config;
-              };
-          };
-          
-          #endif
-          HEOF
-
-      - name: Create Main Makefile
-        run: |
-          cat > drivers/kernelsu/Makefile << 'MEOF'
-          obj-$(CONFIG_KERNELSU) += core/
-          obj-$(CONFIG_KERNELSU) += policy/
-          obj-$(CONFIG_KERNELSU) += selinux/
-          MEOF
-
-      - name: Create Core Makefile
-        run: |
-          cat > drivers/kernelsu/core/Makefile << 'MEOF'
-          obj-y := init.o
-          MEOF
-
-      - name: Create Core init.c
-        run: |
-          cat > drivers/kernelsu/core/init.c << 'CEOF'
-          #include <linux/init.h>
-          #include <linux/module.h>
-          #include <linux/kernel.h>
-          
-          static int __init kernelsu_init(void)
-          {
-              pr_info("KernelSU: Loading\n");
-              return 0;
-          }
-          
-          static void __exit kernelsu_exit(void)
-          {
-              pr_info("KernelSU: Unloading\n");
-          }
-          
-          module_init(kernelsu_init);
-          module_exit(kernelsu_exit);
-          MODULE_LICENSE("GPL");
-          CEOF
-
-      - name: Create Policy Makefile
-        run: |
-          cat > drivers/kernelsu/policy/Makefile << 'MEOF'
-          obj-y := allowlist.o
-          MEOF
-
-      - name: Create Policy Header
-        run: |
-          cat > drivers/kernelsu/policy/allowlist.h << 'HEOF'
-          #ifndef _KSU_ALLOWLIST_H_
-          #define _KSU_ALLOWLIST_H_
-          
-          #include "../uapi/app_profile.h"
-          
-          int ksu_allowlist_init(void);
-          void ksu_allowlist_exit(void);
-          
-          #endif
-          HEOF
-
-      - name: Create Policy Source
-        run: |
-          cat > drivers/kernelsu/policy/allowlist.c << 'CEOF'
-          #include <linux/init.h>
-          #include <linux/kernel.h>
-          #include "allowlist.h"
-          
-          int ksu_allowlist_init(void)
-          {
-              return 0;
-          }
-          
-          void ksu_allowlist_exit(void)
-          {
-          }
-          CEOF
-
-      - name: Create SELinux Makefile
-        run: |
-          cat > drivers/kernelsu/selinux/Makefile << 'MEOF'
-          obj-y := policy.o
-          MEOF
-
-      - name: Create SELinux Policy
-        run: |
-          cat > drivers/kernelsu/selinux/policy.c << 'CEOF'
-          #include <linux/init.h>
-          #include <linux/kernel.h>
-          
-          int ksu_selinux_init(void)
-          {
-              return 0;
-          }
-          
-          void ksu_selinux_exit(void)
-          {
-          }
-          CEOF
-
-      - name: Prepare Kernel Configuration
+      - name: Configure Kernel
         run: |
           export ARCH=arm64
-          export SUBARCH=arm64
-          make O=out ARCH=arm64 vendor/fogos_defconfig
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          
+          # Try vendor folder first, then main configs folder
+          make O=out ARCH=arm64 vendor/fogos_defconfig || make O=out ARCH=arm64 fogos_defconfig
+          
+          # Match Stock Versioning (Wi-Fi Fix)
+          sed -i "s/^SUBLEVEL = .*/SUBLEVEL = 274/" Makefile
+          
+          # Enable KSU & SUSFS
+          ./scripts/config --file out/.config -e CONFIG_KERNELSU
+          ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS
+          ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS_HAS_MAGIC_MOUNT
+          
+          # Disable strict checks for Stock Wi-Fi modules
+          ./scripts/config --file out/.config -d CONFIG_MODVERSIONS
+          ./scripts/config --file out/.config -d CONFIG_MODULE_SIG
+          ./scripts/config --file out/.config -d CONFIG_MODULE_SIG_ALL
+          
+          make O=out ARCH=arm64 olddefconfig
 
       - name: Build Kernel
         run: |
           export ARCH=arm64
-          export SUBARCH=arm64
-          export CLANG=$PWD/proton-clang/bin/clang
-          export CLANG_TRIPLE=aarch64-linux-gnu-
-          make -j$(nproc) O=out ARCH=arm64 CC=$CLANG CLANG_TRIPLE=$CLANG_TRIPLE CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+          CLANG_BIN=$PWD/tools/clang/bin
+          
+          # HOSTCC=gcc is the "secret sauce" to avoid the .relr.dyn error
+          make -j$(nproc) O=out \
+            ARCH=arm64 \
+            CC=$CLANG_BIN/clang \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            HOSTCC=gcc \
+            HOSTCXX=g++ \
+            LD=ld.lld \
+            AR=$CLANG_BIN/llvm-ar \
+            NM=$CLANG_BIN/llvm-nm \
+            OBJCOPY=$CLANG_BIN/llvm-objcopy \
+            OBJDUMP=$CLANG_BIN/llvm-objdump \
+            STRIP=$CLANG_BIN/llvm-strip
 
       - name: Upload Kernel Image
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-image
+          name: Image-G45-fogos-KSU-SUSFS
           path: out/arch/arm64/boot/Image
