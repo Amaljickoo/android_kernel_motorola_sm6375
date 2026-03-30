@@ -27,187 +27,79 @@ jobs:
     - name: Create Missing KernelSU Kconfig
       run: |
         mkdir -p drivers/kernelsu/uapi
-        cat > drivers/kernelsu/Kconfig << 'EOF'
-config KERNELSU
-	bool "KernelSU"
-	default n
-	help
-	  KernelSU is a Kernel-based root solution for Android devices.
-	  It provides a system-level root access to Android OS with fine-grained permission control.
-
-	  If you are unsure about this, say N here.
-
-config KERNELSU_MANAGER
-	bool "KernelSU Manager"
-	depends on KERNELSU
-	default n
-	help
-	  Enable KernelSU Manager support.
-
-config KSU_DEBUG
-	bool "KernelSU Debug"
-	depends on KERNELSU
-	default n
-	help
-	  Enable debug output for KernelSU.
-EOF
+        cat > drivers/kernelsu/Kconfig << 'KCONFIG_EOF'
+        config KERNELSU
+        	bool "KernelSU"
+        	default n
+        	help
+        	  KernelSU is a Kernel-based root solution for Android devices.
+        	  It provides a system-level root access to Android OS with fine-grained permission control.
+        	  If you are unsure about this, say N here.
+        
+        config KERNELSU_MANAGER
+        	bool "KernelSU Manager"
+        	depends on KERNELSU
+        	default n
+        	help
+        	  Enable KernelSU Manager support.
+        
+        config KSU_DEBUG
+        	bool "KernelSU Debug"
+        	depends on KERNELSU
+        	default n
+        	help
+        	  Enable debug output for KernelSU.
+        KCONFIG_EOF
 
     - name: Create Missing KernelSU Header
       run: |
         mkdir -p drivers/kernelsu/uapi
-        cat > drivers/kernelsu/uapi/app_profile.h << 'EOF'
-#ifndef _KERNELSU_UAPI_APP_PROFILE_H
-#define _KERNELSU_UAPI_APP_PROFILE_H
-
-#include <linux/types.h>
-
-#define KSU_MAX_PACKAGE_NAME 128
-#define KSU_MAX_GROUPS 32
-#define KSU_SELINUX_DOMAIN 64
-
-struct ksu_capabilities {
-    __u32 effective;
-    __u32 permitted;
-    __u32 inheritable;
-};
-
-struct root_profile {
-    __s32 uid;
-    __s32 gid;
-    __s32 groups_count;
-    __s32 groups[KSU_MAX_GROUPS];
-    struct ksu_capabilities capabilities;
-    char selinux_domain[KSU_SELINUX_DOMAIN];
-    __s32 namespaces;
-};
-
-struct non_root_profile {
-    __u8 umount_modules;
-};
-
-struct app_profile {
-    __u32 version;
-    char key[KSU_MAX_PACKAGE_NAME];
-    __s32 current_uid;
-    __u8 allow_su;
-    union {
-        struct root_profile rp_config;
-        struct non_root_profile nrp_config;
-    };
-};
-
-#endif
-EOF
+        cat > drivers/kernelsu/uapi/app_profile.h << 'HEADER_EOF'
+        #ifndef _KERNELSU_UAPI_APP_PROFILE_H
+        #define _KERNELSU_UAPI_APP_PROFILE_H
+        
+        #include <linux/types.h>
+        
+        #define KSU_MAX_PACKAGE_NAME 128
+        #define KSU_MAX_GROUPS 32
+        #define KSU_SELINUX_DOMAIN 64
+        
+        struct ksu_capabilities {
+            __u32 effective;
+            __u32 permitted;
+            __u32 inheritable;
+        };
+        
+        struct root_profile {
+            __s32 uid;
+            __s32 gid;
+            __s32 groups_count;
+            __s32 groups[KSU_MAX_GROUPS];
+            struct ksu_capabilities capabilities;
+            char selinux_domain[KSU_SELINUX_DOMAIN];
+            __s32 namespaces;
+        };
+        
+        struct non_root_profile {
+            __u8 umount_modules;
+        };
+        
+        struct app_profile {
+            __u32 version;
+            char key[KSU_MAX_PACKAGE_NAME];
+            __s32 current_uid;
+            __u8 allow_su;
+            union {
+                struct root_profile rp_config;
+                struct non_root_profile nrp_config;
+            };
+        };
+        
+        #endif
+        HEADER_EOF
 
     - name: Create Makefile for KernelSU
       run: |
-        cat > drivers/kernelsu/Makefile << 'EOF'
-obj-$(CONFIG_KERNELSU) += core/
-obj-$(CONFIG_KERNELSU) += policy/
-obj-$(CONFIG_KERNELSU) += selinux/
-EOF
-
-    - name: Create KernelSU Core Module Files
-      run: |
-        mkdir -p drivers/kernelsu/core
-        mkdir -p drivers/kernelsu/policy
-        mkdir -p drivers/kernelsu/selinux
-        
-        cat > drivers/kernelsu/core/Makefile << 'EOF'
-obj-y := init.o
-EOF
-
-        cat > drivers/kernelsu/core/init.c << 'EOF'
-#include <linux/init.h>
-#include <linux/module.h>
-#include <linux/kernel.h>
-
-static int __init kernelsu_init(void)
-{
-    pr_info("KernelSU: Loading KernelSU module\n");
-    return 0;
-}
-
-static void __exit kernelsu_exit(void)
-{
-    pr_info("KernelSU: Unloading KernelSU module\n");
-}
-
-module_init(kernelsu_init);
-module_exit(kernelsu_exit);
-MODULE_LICENSE("GPL");
-MODULE_AUTHOR("KernelSU Contributors");
-MODULE_DESCRIPTION("KernelSU Kernel Module");
-EOF
-
-        cat > drivers/kernelsu/policy/Makefile << 'EOF'
-obj-y := allowlist.o
-EOF
-
-        cat > drivers/kernelsu/policy/allowlist.c << 'EOF'
-#include <linux/init.h>
-#include <linux/kernel.h>
-#include "allowlist.h"
-
-int ksu_allowlist_init(void)
-{
-    return 0;
-}
-
-void ksu_allowlist_exit(void)
-{
-}
-EOF
-
-        cat > drivers/kernelsu/policy/allowlist.h << 'EOF'
-#ifndef _KSU_ALLOWLIST_H_
-#define _KSU_ALLOWLIST_H_
-
-#include "../uapi/app_profile.h"
-
-int ksu_allowlist_init(void);
-void ksu_allowlist_exit(void);
-
-#endif
-EOF
-
-        cat > drivers/kernelsu/selinux/Makefile << 'EOF'
-obj-y := policy.o
-EOF
-
-        cat > drivers/kernelsu/selinux/policy.c << 'EOF'
-#include <linux/init.h>
-#include <linux/kernel.h>
-
-int ksu_selinux_init(void)
-{
-    return 0;
-}
-
-void ksu_selinux_exit(void)
-{
-}
-EOF
-
-    - name: Prepare Kernel Configuration
-      run: |
-        export ARCH=arm64
-        export SUBARCH=arm64
-        cd ${{ github.workspace }}
-        make O=out ARCH=arm64 vendor/fogos_defconfig
-
-    - name: Build Kernel
-      run: |
-        export ARCH=arm64
-        export SUBARCH=arm64
-        export CLANG=$PWD/proton-clang/bin/clang
-        export CLANG_TRIPLE=aarch64-linux-gnu-
-        cd ${{ github.workspace }}
-        
-        make -j$(nproc) O=out ARCH=arm64 CC=$CLANG CLANG_TRIPLE=$CLANG_TRIPLE CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-
-    - name: Upload Kernel
-      uses: actions/upload-artifact@v4
-      with:
-        name: kernel-image
-        path: out/arch/arm64/boot/Image
+        cat > drivers/kernelsu/Makefile << 'MAKE_EOF'
+        obj-$(CONFIG_KERNELSU) += core
+
