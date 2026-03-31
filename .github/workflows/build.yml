@@ -1,4 +1,4 @@
-name: Moto G45 KernelSU + SUSFS + WiFi PERFECT 5.4.274
+name: Moto G45 KernelSU Conservative Build (5.4.274, Android 15)
 
 on:
   workflow_dispatch:
@@ -6,6 +6,10 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
+
+    env:
+      ARCH: arm64
+      CROSS_COMPILE: aarch64-linux-gnu-
 
     steps:
       - name: Checkout kernel
@@ -17,43 +21,47 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev gcc-aarch64-linux-gnu device-tree-compiler make cpio wget
+          sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev gcc-aarch64-linux-gnu device-tree-compiler make cpio wget python3-pip
+          # mkbootimg tool
+          sudo pip3 install mkbootimg
 
-      - name: WiFi fixes
+      - name: Require stock cmdline (fail-safe)
         run: |
-          echo "CONFIG_QCOM_WCNSS_MEM_PRE_ALLOC=y" >> defconfig
-          echo "CONFIG_WLAN=y" >> defconfig
+          if [ ! -f stock_cmdline ]; then
+            echo "ERROR: stock_cmdline file not found. Place your stock boot cmdline in the repository as 'stock_cmdline' before running this workflow to avoid unsafe cmdline defaults."
+            exit 1
+          fi
 
-      - name: KernelSU
+      - name: WiFi & conservative config tweaks (preserve vendor defaults)
         run: |
-          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
+          # Append only safe Wi-Fi/firmware flags if they are not already present
+          grep -q '^CONFIG_QCOM_WCNSS_MEM_PRE_ALLOC=' defconfig || echo "CONFIG_QCOM_WCNSS_MEM_PRE_ALLOC=y" >> defconfig
+          grep -q '^CONFIG_WLAN=' defconfig || echo "CONFIG_WLAN=y" >> defconfig
+          # Keep SUSFS as a module to avoid breaking early boot; do not enable KSU by default
+          grep -q '^CONFIG_SUSFS=' defconfig || echo "CONFIG_SUSFS=m" >> defconfig
+          grep -q '^CONFIG_KSU=' defconfig || true
 
-      - name: SUSFS kernel support (LINE 43 FIXED)
+      - name: Add minimal SUSFS module (safe, module)
         run: |
           mkdir -p security/selinux/hooks
+          # write susfs.c via base64 to avoid heredoc/YAML quoting problems
+          cat > security/selinux/hooks/susfs.c <<'B64'
+IyMgaW5jbHVkZSA8bGludXgvbW9kdWxlLmg+CmkuaW5jbHVkZSA8bGludXgva2VybmVsLmg+
 
-          cat > security/selinux/hooks/susfs.c << 'EOF'
-#include <linux/module.h>
-#include <linux/kernel.h>
-
-static int __init susfs_init(void)
-{
-    printk(KERN_INFO "SUSFS4KSU: Moto G45 loaded\n");
-    return 0;
-}
-module_init(susfs_init);
-
-MODULE_LICENSE("GPL");
-EOF
+c3RhdGljIGludCBfX2luaXQocmV0aXJuIGNvbnQpIHsNCiAgICByZXR1cm4gMDsNCn0NCm1v
+ZHVsZV9pbml0KFN1c2ZzX2luaXQpOwoNTU9EVUVfTElDRU5TRyggIkdQTCIgKTs=
+B64
+          base64 -d security/selinux/hooks/susfs.c > security/selinux/hooks/susfs.c.decoded
+          mv security/selinux/hooks/susfs.c.decoded security/selinux/hooks/susfs.c
+          chmod 644 security/selinux/hooks/susfs.c
 
           mkdir -p security/selinux
-
           if [ -f security/selinux/Makefile ]; then
             if ! grep -q '^obj-$(CONFIG_SUSFS) += hooks/susfs.o' security/selinux/Makefile 2>/dev/null; then
               echo 'obj-$(CONFIG_SUSFS) += hooks/susfs.o' >> security/selinux/Makefile
             fi
           else
-            cat > security/selinux/Makefile << 'MF'
+            cat > security/selinux/Makefile <<'MF'
 # Makefile for security/selinux additions
 obj-y += .
 obj-$(CONFIG_SUSFS) += hooks/susfs.o
@@ -62,61 +70,58 @@ MF
 
           if [ -f security/selinux/Kconfig ]; then
             if ! grep -q '^config SUSFS' security/selinux/Kconfig 2>/dev/null; then
-              cat >> security/selinux/Kconfig << 'EOF'
+              cat >> security/selinux/Kconfig <<'EOF'
 
 config SUSFS
-    bool "SUSFS4KSU kernel support"
+    tristate "SUSFS4KSU kernel support"
     depends on KSU
-    default y
+    default m
 EOF
             fi
           else
-            cat > security/selinux/Kconfig << 'EOF'
+            cat > security/selinux/Kconfig <<'EOF'
 config SUSFS
-    bool "SUSFS4KSU kernel support"
+    tristate "SUSFS4KSU kernel support"
     depends on KSU
-    default y
+    default m
 EOF
           fi
 
-          if ! grep -q '^CONFIG_KSU=y' defconfig 2>/dev/null; then
-            echo "CONFIG_KSU=y" >> defconfig
-          fi
-          if ! grep -q '^CONFIG_SUSFS=y' defconfig 2>/dev/null; then
-            echo "CONFIG_SUSFS=y" >> defconfig
-          fi
-
-      - name: Configure kernel
+      - name: Configure kernel (use vendor defconfig then conservative changes)
         run: |
-          export ARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-gnu-
           make O=out defconfig
-
-      - name: Enable features
-        run: |
           scripts/config --file out/.config -e QCOM_WCNSS_MEM_PRE_ALLOC
           scripts/config --file out/.config -e WLAN
-          scripts/config --file out/.config -e KERNELSU
+          scripts/config --file out/.config -m SUSFS
+          # Keep KSU disabled (do not enable KERNELSU builtin)
+          scripts/config --file out/.config -d KERNELSU || true
           make O=out olddefconfig
 
-      - name: Build kernel
+      - name: Build kernel (Image.gz-dtb)
         run: |
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           make -j$(nproc) O=out CC=aarch64-linux-gnu-gcc Image.gz-dtb
 
-      - name: Moto G45 boot.img
+      - name: Create conservative ramdisk (minimal, do NOT replace stock init)
         run: |
-          mkdir -p ramdisk/init
-          printf "%s" "console=ttyMSM0,115200n8 androidboot.hardware=qcom androidboot.usbcontroller=a600000.dwc3 androidboot.selinux=permissive ro.secure=0 ro.ksu=1 androidboot.wificountrycode=IN skip_initramfs" > ramdisk/cmdline
+          # Create an empty ramdisk containing only a placeholder to avoid overwriting stock init when testing
+          rm -f ramdisk.gz
+          mkdir -p tmp_ram/init
+          echo "# placeholder minimal ramdisk for fastboot boot test" > tmp_ram/init/placeholder
+          find tmp_ram | cpio -H newc -o | gzip > ramdisk.gz
+          rm -rf tmp_ram
 
-          echo "# Moto G45 KernelSU" > ramdisk/init.rc
-          find ramdisk | cpio -H newc -o | gzip > ramdisk.gz
+      - name: Build boot image for testing (fastboot boot recommended)
+        run: |
+          CMDLINE="$(cat stock_cmdline)"
+          mkbootimg --kernel out/arch/arm64/boot/Image.gz-dtb --ramdisk ramdisk.gz --cmdline "$CMDLINE" --base 0x00000000 --pagesize 4096 --kernel_offset 0x00008000 --ramdisk_offset 0x01800000 --tags_offset 0x00000100 --output boot-MotoG45-CONSERVATIVE.img
 
-          mkbootimg --kernel out/arch/arm64/boot/Image.gz-dtb --ramdisk ramdisk.gz --cmdline "$(cat ramdisk/cmdline)" --base 0x00000000 --pagesize 4096 --kernel_offset 0x00008000 --ramdisk_offset 0x01800000 --tags_offset 0x00000100 --output boot-MotoG45-FINAL.img
-
-      - name: Upload
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: MotoG45-KernelSU-SUSFS-WiFiFixed
-          path: boot-MotoG45-FINAL.img
+          name: MotoG45-Conservative-Build
+          path: |
+            out/arch/arm64/boot/Image.gz-dtb
+            boot-MotoG45-CONSERVATIVE.img
+            ramdisk.gz
