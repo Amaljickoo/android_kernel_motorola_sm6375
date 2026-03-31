@@ -1,4 +1,4 @@
-name: Moto G45 KernelSU - PATH FIXED
+name: Moto G45 KernelSU - FIXED HEADERS
 
 on:
   workflow_dispatch:
@@ -16,73 +16,27 @@ jobs:
       - name: Install Tools
         run: |
           sudo apt update
-          sudo apt install -y bc bison build-essential flex git libncurses5-dev libssl-dev \
-            libelf-dev python3 gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu pahole \
-            clang lld llvm device-tree-compiler
+          sudo apt install -y bc bison build-essential flex git libncurses5-dev \
+            libssl-dev libelf-dev python3 gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            pahole clang lld llvm device-tree-compiler
 
-      - name: KernelSU
+      - name: Manual KernelSU (FIX HEADERS)
         run: |
-          curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash -
+          # Download KernelSU manually
+          git clone --depth=1 https://github.com/tiann/KernelSU KernelSU
+          cd KernelSU/kernel
+          make -j$(nproc)
+          make modules_install INSTALL_MOD_PATH=../modules
+          cd ../..
+          
+          # Copy kernel modules
+          mkdir -p out/modules
+          cp KernelSU/kernel/ksu.ko out/modules/
+          
+          # Create uapi headers
+          mkdir -p include/uapi/linux
+          echo '#define KSU_VERSION "v0.9.3"' > include/uapi/linux/app_profile.h
+          echo '#define KSU_NEW_DCACHE_FLUSH 0' >> include/uapi/linux/app_profile.h
 
-      - name: Configure Kernel
-        run: |
-          export ARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-gnu-
-          mkdir -p out
-          
-          # Moto G45 config
-          DEFCONFIG=$(find arch/arm64/configs -name "*holi*" -name "*defconfig" | head -1)
-          echo "Using: $DEFCONFIG"
-          cp "$DEFCONFIG" arch/arm64/configs/stock_defconfig
-          
-          # Initial config
-          make O=out ARCH=arm64 stock_defconfig
-          
-          # FULL PATH to scripts/config
-          ./scripts/config --file out/.config -e CONFIG_BUILD_ARM64_DT_OVERLAY
-          ./scripts/config --file out/.config -e CONFIG_LTO_NONE
-          ./scripts/config --file out/.config -d CONFIG_LTO_CLANG
-          ./scripts/config --file out/.config -e CONFIG_KERNELSU
-          ./scripts/config --file out/.config -d CONFIG_MODVERSIONS
-          ./scripts/config --file out/.config -d CONFIG_MODULE_SIG
-          
-          # Stock compatibility
-          sed -i 's/SUBLEVEL = .*/SUBLEVEL = 274/' out/Makefile
-          
-          # Final config
-          make O=out ARCH=arm64 olddefconfig
-          echo "✅ Config ready!"
-
-      - name: Build Kernel
-        run: |
-          export ARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-gnu-
-          
-          make -j$(nproc) O=out \
-            ARCH=arm64 \
-            CC=clang \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            HOSTCC=clang \
-            HOSTLD=ld.lld \
-            LD=ld.lld \
-            AR=llvm-ar \
-            NM=llvm-nm \
-            OBJCOPY=llvm-objcopy \
-            STRIP=llvm-strip \
-            Image.gz-dtb dtbs
-
-      - name: Package
-        run: |
-          mkdir -p Moto-G45-Kernel
-          cp out/arch/arm64/boot/Image.gz-dtb Moto-G45-Kernel/
-          find out/arch/arm64/boot/dts -name "*.dtb" -o -name "*.dtbo" | head -10 | xargs -I {} cp {} Moto-G45-Kernel/
-          ls -lh Moto-G45-Kernel/
-          echo "✅ READY TO FLASH!"
-
-      - name: Upload
-        uses: actions/upload-artifact@v4
-        with:
-          name: Moto-G45-KernelSU-v5.4.274
-          path: Moto-G45-Kernel/
+      - name: Configure
+        run:
