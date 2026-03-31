@@ -14,80 +14,123 @@ jobs:
           ref: lineage-22.2
           fetch-depth: 1
 
-      - name: Install Build Tools
+      - name: Install Build Dependencies
         run: |
           sudo apt update
-          sudo apt install -y bc bison build-essential curl flex git kmod libssl-dev libelf-dev gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu pahole llvm lld python3
+          sudo apt install -y bc bison build-essential ccache curl flex git gnupg kmod libncurses5-dev \
+            libssl-dev libelf-dev python3 python3-pip rsync unzip zip aria2 device-tree-compiler \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu pahole xmlstarlet
 
-      - name: Setup Proton Clang
+      - name: Setup Clang & Build Tools
         run: |
-          git clone https://github.com/kdrag0n/proton-clang.git --depth=1 tools/clang
+          # Download Proton Clang
+          git clone --depth=1 --branch=clang-r522817b https://github.com/kdrag0n/proton-clang.git tools/clang
+          
+          # Verify clang
+          tools/clang/bin/clang --version
+          tools/clang/bin/ld.lld --version
 
-      - name: Integrate KernelSU & SUSFS
+      - name: Setup KernelSU
         run: |
-          curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash -s main
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s main
+
+      - name: Add SUSFS Support
+        run: |
+          # Clone SUSFS
           git clone https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 --depth=1 susfs_src
+          
+          # Copy SUSFS files
           cp susfs_src/kernel_patches/fs/susfs.c fs/
           cp susfs_src/kernel_patches/include/linux/susfs.h include/linux/
-          cp susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch KernelSU/
-          cd KernelSU && patch -p1 < 10_enable_susfs_for_ksu.patch && cd ..
+          
+          # Apply SUSFS patches
+          cd KernelSU && patch -p1 < ../susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch && cd ..
           patch -p1 < susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch || true
 
-      - name: Configure and Fix Moto DT
+      - name: Configure Kernel
         run: |
           export ARCH=arm64
           mkdir -p out
           
-          # Merge configs
-          BASE_CONF=$(find arch/arm64/configs/vendor/ -name "holi-qgki_defconfig" -o -name "holi_defconfig" | head -n 1)
-          FOGOS_FRAG=$(find arch/arm64/configs/vendor/ -name "moto-holi-fogo.config" -o -name "*fogos*" | head -n 1)
-          cat "$BASE_CONF" > arch/arm64/configs/stock_defconfig
-          if [ -f "$FOGOS_FRAG" ]; then
-            cat "$FOGOS_FRAG" >> arch/arm64/configs/stock_defconfig
-          fi
-
+          # Find correct defconfig for Moto G45 (holi)
+          DEFCONFIG=$(find arch/arm64/configs/ -name "*holi*" -name "*defconfig" | head -n1)
+          echo "Using defconfig: $DEFCONFIG"
+          
+          # Create stock config
+          cp "$DEFCONFIG" arch/arm64/configs/stock_defconfig
+          
+          # Prepare config
           make O=out ARCH=arm64 stock_defconfig
           
-          # Fix the "Moto DT w/o overlay" error
-          ./scripts/config --file out/.config -e CONFIG_BUILD_ARM64_DT_OVERLAY
+          # Essential fixes for Moto G45
+          scripts/config --file out/.config -e CONFIG_BUILD_ARM64_DT_OVERLAY
+          scripts/config --file out/.config -e CONFIG_LTO_NONE
+          scripts/config --file out/.config -d CONFIG_LTO_CLANG
+          scripts/config --file out/.config -d CONFIG_LTO_THIN
           
-          # Force LTO to None to avoid the interactive prompt [1-2?]
-          ./scripts/config --file out/.config -e CONFIG_LTO_NONE
-          ./scripts/config --file out/.config -d CONFIG_LTO_CLANG
+          # KernelSU + SUSFS
+          scripts/config --file out/.config -e CONFIG_OVERLAY_FS
+          scripts/config --file out/.config -e CONFIG_KERNELSU
+          scripts/config --file out/.config -e CONFIG_KPROBES
+          scripts/config --file out/.config -e CONFIG_HAVE_KPROBES
+          scripts/config --file out/.config -e CONFIG_HAVE_KRETPROBES
+          scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS
           
-          # KernelSU & SUSFS
-          ./scripts/config --file out/.config -e CONFIG_KERNELSU
-          ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS
-          ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS_HAS_MAGIC_MOUNT
-          
-          # Stock ROM Wi-Fi compatibility
+          # Stock ROM compatibility (CRITICAL)
           sed -i "s/^SUBLEVEL = .*/SUBLEVEL = 274/" Makefile
-          ./scripts/config --file out/.config -d CONFIG_MODVERSIONS
-          ./scripts/config --file out/.config -d CONFIG_MODULE_SIG
-          ./scripts/config --file out/.config -d CONFIG_MODULE_SIG_ALL
+          scripts/config --file out/.config -d CONFIG_MODVERSIONS
+          scripts/config --file out/.config -d CONFIG_MODULE_SIG
+          scripts/config --file out/.config -d CONFIG_MODULE_SIG_ALL
+          scripts/config --file out/.config -d CONFIG_MODULE_SIG_FORCE
           
-          # Silent finalization
+          # Final config cleanup
           make O=out ARCH=arm64 olddefconfig
+          
+          # Verify config
+          grep -E "(CONFIG_KERNELSU|CONFIG_LTO_NONE|SUBLEVEL)" out/.config Makefile
 
       - name: Build Kernel
         run: |
           export ARCH=arm64
-          CLANG_BIN=$PWD/tools/clang/bin
+          export CLANG_BIN=$PWD/tools/clang/bin
+          
           make -j$(nproc) O=out \
             ARCH=arm64 \
             CC=$CLANG_BIN/clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            HOSTCC=gcc \
+            HOSTCC=clang \
+            HOSTLD=ld.lld \
+            HOSTAR=llvm-ar \
             LD=ld.lld \
-            Image dtbs
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
+            REAL_CC=$CLANG_BIN/clang \
+            REAL_LD=ld.lld \
+            Image.gz-dtb \
+            dtbs || make -j$(nproc) O=out Image.gz-dtb dtbs
 
-      - name: Upload Build Artifacts
+      - name: Package Kernel
+        run: |
+          # Create boot.img ready package
+          mkdir -p kernel_package
+          cp out/arch/arm64/boot/Image.gz-dtb kernel_package/
+          cp -r out/arch/arm64/boot/dts/* kernel_package/dtb/
+          
+          # List built files
+          find kernel_package -type f -exec ls -lh {} \;
+
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-G45-Fogos
+          name: Moto-G45-KernelSU-v5.4.274
           path: |
-            out/arch/arm64/boot/Image
-            out/arch/arm64/boot/dts/vendor/qcom/*.dtb
-            out/arch/arm64/boot/dts/vendor/qcom/*.dtbo
+            kernel_package/
+            out/arch/arm64/boot/Image.gz-dtb
+            out/arch/arm64/boot/dts/**/*.dtb
+            out/arch/arm64/boot/dts/**/*.dtbo
+          retention-days: 30
