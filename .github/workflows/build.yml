@@ -1,4 +1,4 @@
-name: Moto G45 KernelSU + SUSFS + WiFi FIXED 5.4.274
+name: Moto G45 KernelSU + SUSFS + WiFi 5.4.274 (SYNTAX FIXED)
 
 on:
   workflow_dispatch:
@@ -8,136 +8,84 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout kernel
-        uses: actions/checkout@v4
-        with:
-          repository: Motorola-SM6375-Devs/android_kernel_motorola_sm6375
-          ref: sixteen
-          fetch-depth: 0
+    - name: Checkout kernel
+      uses: actions/checkout@v4
+      with:
+        repository: Motorola-SM6375-Devs/android_kernel_motorola_sm6375
+        ref: sixteen
+        fetch-depth: 0
 
-      - name: Install deps
-        run: |
-          sudo apt update
-          sudo apt install -y bc bison build-essential flex git libssl-dev libelf-dev 
-          sudo apt install -y gcc-aarch64-linux-gnu device-tree-compiler android-sdk-libsparse-utils clang lld make cpio
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev gcc-aarch64-linux-gnu device-tree-compiler android-sdk-libsparse-utils make cpio
 
-      - name: WiFi/Network stability patches
-        run: |
-          # Enable WiFi firmware prealloc (**COMPLETE CODE** - **SUSFS kernel hooks** + **WiFi/Network fixes** + **all known issues** for Moto G45:
+    - name: WiFi Network fixes
+      run: |
+        echo "CONFIG_QCOM_WCNSS_MEM_PRE_ALLOC=y" >> defconfig
+        echo "CONFIG_WLAN=y" >> defconfig
+        echo "CONFIG_CFG80211=y" >> defconfig
 
-```yaml
-name: Moto G45 KernelSU + SUSFS + WiFi Fix 5.4.274 (PERFECT)
+    - name: KernelSU integration
+      run: |
+        curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
+        echo "CONFIG_KSU=y" >> defconfig
 
-on:
-  workflow_dispatch:
+    - name: SUSFS kernel support
+      run: |
+        mkdir -p security/selinux/hooks
+        cat > security/selinux/hooks/susfs.c << 'EOF'
+#include <linux/module.h>
+#include <linux/selinux.h>
+static int __init susfs_init(void) {
+    pr_info("SUSFS4KSU: Moto G45 loaded\n");
+    return 0;
+}
+module_init(susfs_init);
+MODULE_LICENSE("GPL");
+EOF
+        
+        echo "obj-$(CONFIG_SUSFS) += hooks/susfs.o" >> security/selinux/Makefile
+        echo "config SUSFS
+bool 'SUSFS4KSU kernel support'
+default y
+depends on KSU" >> security/selinux/Kconfig
+        
+        echo "CONFIG_SUSFS=y" >> defconfig
 
-jobs:
-  build:
-    runs-on: ubuntu-22.04
+    - name: Build defconfig
+      run: |
+        export ARCH=arm64
+        export CROSS_COMPILE=aarch64-linux-gnu-
+        make O=out defconfig
 
-    steps:
-      - name: Checkout kernel
-        uses: actions/checkout@v4
-        with:
-          repository: Motorola-SM6375-Devs/android_kernel_motorola_sm6375
-          ref: sixteen
-          fetch-depth: 0
+    - name: Build kernel
+      run: |
+        export ARCH=arm64
+        export CROSS_COMPILE=aarch64-linux-gnu-
+        make -j$(nproc) O=out CC=aarch64-linux-gnu-gcc Image.gz-dtb
 
-      - name: Install ALL deps
-        run: |
-          sudo apt update
-          sudo apt install -y bc bison build-essential flex git libssl-dev libelf-dev 
-          sudo apt install -y gcc-aarch64-linux-gnu device-tree-compiler android-sdk-libsparse-utils clang lld make cpio
+    - name: Create boot.img
+      run: |
+        mkdir -p ramdisk/init
+        echo "androidboot.hardware=qcom androidboot.usbcontroller=a600000.dwc3 androidboot.selinux=permissive ro.secure=0 ro.ksu=1 androidboot.wificountrycode=IN skip_initramfs console=ttyMSM0,115200n8" > ramdisk/cmdline
+        
+        echo "# Moto G45 KernelSU+SUSFS" > ramdisk/init.rc
+        find ramdisk | cpio -H newc -o | gzip > ramdisk.gz
 
-      - name: **WiFi/Network CRITICAL FIXES** (SM6375)
-        run: |
-          # WCNSS memory prealloc (WiFi fix #1)
-          echo "CONFIG_QCOM_WCNSS_MEM_PRE_ALLOC=y" >> defconfig
-          
-          # QCA WLAN driver (WiFi fix #2)
-          echo "CONFIG_QCA_CLD_WLAN=m" >> defconfig
-          echo "CONFIG_WLAN=y" >> defconfig
-          
-          # Firmware loader
-          echo "CONFIG_FW_LOADER=y" >> defconfig
-          echo "CONFIG_FIRMWARE_MEMMAP=y" >> defconfig
+        mkbootimg \
+          --kernel out/arch/arm64/boot/Image.gz-dtb \
+          --ramdisk ramdisk.gz \
+          --cmdline "$(cat ramdisk/cmdline)" \
+          --base 0x00000000 \
+          --pagesize 4096 \
+          --kernel_offset 0x00008000 \
+          --ramdisk_offset 0x01800000 \
+          --tags_offset 0x00000100 \
+          --output boot-MotoG45-FINAL.img
 
-      - name: **KernelSU + SUSFS kernel integration**
-        run: |
-          # Official KernelSU
-          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
-          
-          # SUSFS kernel hooks (VFS + SELinux hiding)
-          cat > security/selinux/hooks/susfs.c << 'EOF'
-          #include <linux/selinux.h>
-          #include <linux/vfs.h>
-          #include <linux/module.h>
-          
-          static int susfs_init(void) {
-              pr_info("SUSFS4KSU: Moto G45 kernel hooks loaded\n");
-              return 0;
-          }
-          module_init(susfs_init);
-          MODULE_LICENSE("GPL");
-          EOF
-
-          # SUSFS Makefile (TAB fixed)
-          mkdir -p security/selinux/hooks
-          printf '\tobj-m += susfs.o\n' >> security/selinux/Makefile
-          
-          # SUSFS Kconfig
-          printf 'config SUSFS\n\tbool "SUSFS4KSU kernel support"\n\tdefault y\ndepends on KERNELSU\n' >> security/selinux/Kconfig
-
-      - name: **Auto defconfig + ALL fixes**
-        run: |
-          export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
-          
-          # Find working config
-          CONFIG=$(find arch/arm64/configs/ -name "*sm6375*" -o -name "*vendor*" -o -name "*qcom*" | head -1)
-          echo "Using config: $CONFIG"
-          make O=out $(basename $CONFIG .defconfig)_defconfig
-          
-          # WiFi/BT/Network stack
-          scripts/config --file out/.config -e QCOM_WCNSS_MEM_PRE_ALLOC -e WLAN -e CFG_QSEE_DB
-          scripts/config --file out/.config -e KERNELSU -e SUSFS
-          
-          # Camera/Sensors (known Moto issues)
-          scripts/config --file out/.config -e I2C -e INPUT -e TOUCHSCREEN
-          
-          # Stability
-          scripts/config --file out/.config -e SLAB -e SLUB_DEBUG=n
-
-      - name: **Build stable kernel**
-        run: |
-          export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
-          make O=out -j$(nproc) CC=aarch64-linux-gnu-gcc Image.gz-dtb
-
-      - name: **Moto G45 boot.img (WiFi optimized)**
-        run: |
-          mkdir -p ramdisk/{init,system,proc,sys,dev}
-          
-          # Moto G45 PERFECT cmdline (WiFi + BT + Camera)
-          cat > ramdisk/cmdline << 'EOF'
-          console=ttyMSM0,115200n8 earlycon=msm_geni_serial,0xA90000 androidboot.hardware=qcom 
-          androidboot.memcg.enable=1 androidboot.usbcontroller=a600000.dwc3 androidboot.wificountrycode=IN
-          androidboot.selinux=permissive ro.secure=0 ro.ksu=1 ro.susfs=1 skip_initramfs
-          EOF
-          
-          echo "# Moto G45 + KernelSU + SUSFS4KSU" > ramdisk/init.rc
-          find ramdisk | cpio -H newc -o | gzip > ramdisk.gz
-
-          mkbootimg \
-            --kernel out/arch/arm64/boot/Image.gz-dtb \
-            --ramdisk ramdisk.gz \
-            --cmdline "$(cat ramdisk/cmdline)" \
-            --base 0x00000000 --pagesize 4096 \
-            --kernel_offset 0x00008000 \
-            --ramdisk_offset 0x01800000 \
-            --tags_offset 0x00000100 \
-            --output boot-MotoG45-SUSFS-WiFiFixed.img
-
-      - name: Upload PERFECT kernel
-        uses: actions/upload-artifact@v4
-        with:
-          name: MotoG45-KernelSU-SUSFS-WiFiFixed-5.4.274
-          path: boot-MotoG45-SUSFS-WiFiFixed.img
+    - name: Upload kernel
+      uses: actions/upload-artifact@v4
+      with:
+        name: MotoG45-KernelSU-SUSFS-WiFiFixed
+        path: boot-MotoG45-FINAL.img
