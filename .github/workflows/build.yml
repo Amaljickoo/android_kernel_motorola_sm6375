@@ -36,33 +36,43 @@ jobs:
         fi
         patch -p1 < susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch || true
 
+    # ✅🔥 CRITICAL FIX (YOUR ERROR SOLUTION)
+    - name: Fix KernelSU Compatibility (pgtable error)
+      run: |
+        FILE="drivers/kernelsu/feature/sucompat.c"
+        
+        if [ -f "$FILE" ]; then
+          echo "Patching $FILE"
+          
+          sed -i '1i\
+#ifndef __has_include\n#define __has_include(x) 0\n#endif\n\
+#if __has_include(<linux/pgtable.h>)\n#include <linux/pgtable.h>\n#elif __has_include(<asm/pgtable.h>)\n#include <asm/pgtable.h>\n#endif\n' $FILE
+          
+          sed -i '/#include <linux\/pgtable.h>/d' $FILE
+        else
+          echo "sucompat.c not found, skipping fix"
+        fi
+
     - name: Configure for Moto G45 Fogos
       run: |
         export ARCH=arm64
         
-        # FIX 1: Match SUBLEVEL to your Stock ROM (5.4.274)
         sed -i 's/^SUBLEVEL = .*/SUBLEVEL = 274/' Makefile
         
-        # FIX 2: Exact Version String Match (Wi-Fi Fix)
-        # We use a safer way to set localversion without breaking scripts
         sed -i 's/echo "+"/#echo "+"/' scripts/setlocalversion
         echo "-moto-00517-g2ad8f9e38ea6" > localversion
         
-        # FIX 3: Load the correct fogos config
         make O=out ARCH=arm64 vendor/fogos_defconfig
 
-        # FIX 4: Enable Features & Network
         ./scripts/config --file out/.config -e CONFIG_KERNELSU
         ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS
         ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS_HAS_MAGIC_MOUNT
         ./scripts/config --file out/.config -e CONFIG_WLAN
         
-        # FIX 5: Disable Module Signing for Stock ROM
         ./scripts/config --file out/.config -d CONFIG_MODULE_SIG
         ./scripts/config --file out/.config -d CONFIG_MODULE_SIG_ALL
         ./scripts/config --file out/.config -d CONFIG_MODULE_SIG_FORCE
         
-        # FIX 6: Safety - Disable WERROR properly without mangling the Makefile
         ./scripts/config --file out/.config -d CONFIG_WERROR
         
         make O=out ARCH=arm64 olddefconfig
@@ -71,8 +81,7 @@ jobs:
       run: |
         export ARCH=arm64
         export CROSS_COMPILE=aarch64-linux-gnu-
-        # We pass KCFLAGS="-Wno-error" directly to the make command. 
-        # This is the SAFEST way to ignore warnings without breaking the build logic.
+        
         make -j$(nproc) O=out ARCH=arm64 CC=aarch64-linux-gnu-gcc KCFLAGS="-Wno-error" Image.gz-dtb || \
         make -j$(nproc) O=out ARCH=arm64 CC=aarch64-linux-gnu-gcc KCFLAGS="-Wno-error" Image.gz
 
