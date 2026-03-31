@@ -30,42 +30,84 @@ jobs:
 
       - name: SUSFS kernel support (LINE 43 FIXED)
         run: |
+```yaml
+name: Moto G45 KernelSU + SUSFS + WiFi PERFECT 5.4.274
+
+on:
+  workflow\_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout kernel
+        uses: actions/checkout@v4
+        with:
+          repository: Motorola-SM6375-Devs/android\_kernel\_motorola\_sm6375
+          ref: sixteen
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev gcc-aarch64-linux-gnu device-tree-compiler make cpio wget
+
+      - name: WiFi fixes
+        run: |
+          echo "CONFIG\_QCOM\_WCNSS\_MEM\_PRE\_ALLOC=y" >> defconfig
+          echo "CONFIG\_WLAN=y" >> defconfig
+
+      - name: KernelSU
+        run: |
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
+
+      - name: SUSFS kernel support (LINE 43 FIXED)
+        run: |
           mkdir -p security/selinux/hooks
 
           cat > security/selinux/hooks/susfs.c << 'EOF'
 #include <linux/module.h>
 #include <linux/kernel.h>
 
-static int __init susfs_init(void)
+static int __init susfs\_init(void)
 {
-    printk(KERN_INFO "SUSFS4KSU: Moto G45 loaded\n");
+    printk(KERN\_INFO "SUSFS4KSU: Moto G45 loaded\n");
     return 0;
 }
-module_init(susfs_init);
+module\_init(susfs\_init);
 
-MODULE_LICENSE("GPL");
+MODULE\_LICENSE("GPL");
 EOF
 
-          # Ensure Makefile exists and append the object line (use a tab where needed)
+          # Ensure parent dir and Makefile
           mkdir -p security/selinux
-          # Create Makefile if missing, then ensure proper line.
-          if ! grep -q '^obj-\\$(CONFIG_SUSFS) += hooks/susfs.o' security/selinux/Makefile 2>/dev/null; then
-            # If Makefile exists, append; otherwise create with correct content.
-            if [ -f security/selinux/Makefile ]; then
-              echo 'obj-$(CONFIG_SUSFS) += hooks/susfs.o' >> security/selinux/Makefile
-            else
-              cat > security/selinux/Makefile << 'MF'
+
+          # Use a simpler grep pattern (no shell-escaped \$() in the pattern)
+          if [ -f security/selinux/Makefile ]; then
+            if ! grep -q '^obj-\$(CONFIG\_SUSFS) += hooks/susfs.o' security/selinux/Makefile 2>/dev/null; then
+              echo 'obj-\$(CONFIG\_SUSFS) += hooks/susfs.o' >> security/selinux/Makefile
+            fi
+          else
+            cat > security/selinux/Makefile << 'MF'
 # Makefile for security/selinux additions
 obj-y += .
-obj-$(CONFIG_SUSFS) += hooks/susfs.o
+obj-\$(CONFIG\_SUSFS) += hooks/susfs.o
 MF
-            fi
           fi
 
           # Append Kconfig entry if not present
-          if ! grep -q '^config SUSFS' security/selinux/Kconfig 2>/dev/null; then
-            cat >> security/selinux/Kconfig << 'EOF'
+          if [ -f security/selinux/Kconfig ]; then
+            if ! grep -q '^config SUSFS' security/selinux/Kconfig 2>/dev/null; then
+              cat >> security/selinux/Kconfig << 'EOF'
 
+config SUSFS
+    bool "SUSFS4KSU kernel support"
+    depends on KSU
+    default y
+EOF
+            fi
+          else
+            cat > security/selinux/Kconfig << 'EOF'
 config SUSFS
     bool "SUSFS4KSU kernel support"
     depends on KSU
@@ -73,39 +115,42 @@ config SUSFS
 EOF
           fi
 
-          # Ensure KSU enabled in defconfig
-          echo "CONFIG_KSU=y" >> defconfig
-          echo "CONFIG_SUSFS=y" >> defconfig
+          # Ensure KSU and SUSFS enabled in defconfig
+          if ! grep -q '^CONFIG\_KSU=y' defconfig 2>/dev/null; then
+            echo "CONFIG\_KSU=y" >> defconfig
+          fi
+          if ! grep -q '^CONFIG\_SUSFS=y' defconfig 2>/dev/null; then
+            echo "CONFIG\_SUSFS=y" >> defconfig
+          fi
 
       - name: Configure kernel
         run: |
           export ARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS\_COMPILE=aarch64-linux-gnu-
           make O=out defconfig
 
       - name: Enable features
         run: |
-          scripts/config --file out/.config -e QCOM_WCNSS_MEM_PRE_ALLOC
+          scripts/config --file out/.config -e QCOM\_WCNSS\_MEM\_PRE\_ALLOC
           scripts/config --file out/.config -e WLAN
           scripts/config --file out/.config -e KERNELSU
-          # Re-check config
           make O=out olddefconfig
 
       - name: Build kernel
         run: |
           export ARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-gnu-
-          make -j$(nproc) O=out CC=aarch64-linux-gnu-gcc Image.gz-dtb
+          export CROSS\_COMPILE=aarch64-linux-gnu-
+          make -j\$(nproc) O=out CC=aarch64-linux-gnu-gcc Image.gz-dtb
 
       - name: Moto G45 boot.img
         run: |
           mkdir -p ramdisk/init
-          printf "console=ttyMSM0,115200n8 androidboot.hardware=qcom androidboot.usbcontroller=a600000.dwc3 androidboot.selinux=permissive ro.secure=0 ro.ksu=1 androidboot.wificountrycode=IN skip_initramfs" > ramdisk/cmdline
+          printf "%s" "console=ttyMSM0,115200n8 androidboot.hardware=qcom androidboot.usbcontroller=a600000.dwc3 androidboot.selinux=permissive ro.secure=0 ro.ksu=1 androidboot.wificountrycode=IN skip\_initramfs" > ramdisk/cmdline
 
           echo "# Moto G45 KernelSU" > ramdisk/init.rc
           find ramdisk | cpio -H newc -o | gzip > ramdisk.gz
 
-          mkbootimg --kernel out/arch/arm64/boot/Image.gz-dtb --ramdisk ramdisk.gz --cmdline "$(cat ramdisk/cmdline)" --base 0x00000000 --pagesize 4096 --kernel_offset 0x00008000 --ramdisk_offset 0x01800000 --tags_offset 0x00000100 --output boot-MotoG45-FINAL.img
+          mkbootimg --kernel out/arch/arm64/boot/Image.gz-dtb --ramdisk ramdisk.gz --cmdline "\$(cat ramdisk/cmdline)" --base 0x00000000 --pagesize 4096 --kernel\_offset 0x00008000 --ramdisk\_offset 0x01800000 --tags\_offset 0x00000100 --output boot-MotoG45-FINAL.img
 
       - name: Upload
         uses: actions/upload-artifact@v4
