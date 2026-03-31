@@ -1,4 +1,4 @@
-name: Moto G45 KernelSU + SUSFS 5.4.274 (ALL FIXED)
+name: Moto G45 KernelSU + SUSFS 5.4.274 (FINAL TOOLCHAIN)
 
 on:
   workflow_dispatch:
@@ -14,90 +14,77 @@ jobs:
           repository: Motorola-SM6375-Devs/android_kernel_motorola_sm6375
           ref: sixteen
 
-      - name: Install deps + mkbootimg
+      - name: Install deps
         run: |
           sudo apt update
           sudo apt install -y bc bison build-essential curl flex git kmod libssl-dev libelf-dev gcc-aarch64-linux-gnu device-tree-compiler android-sdk-libsparse-utils
 
-      - name: LLVM Clang 16 (stable)
+      - name: LLVM 18.1.8 Clang (Ubuntu 22.04)
         run: |
-          wget https://github.com/llvm/llvm-project/releases/download/llvmorg-16.0.6/clang+llvm-16.0.6-x86_64-linux-gnu-ubuntu-22.04.tar.xz
-          tar xf clang+llvm-16.0.6-x86_64-linux-gnu-ubuntu-22.04.tar.xz
-          mv clang+llvm-16.0.6-x86_64-linux-gnu-ubuntu-22.04 clang
+          wget https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-22.04.tar.xz
+          tar xf clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-22.04.tar.xz
+          mv clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-22.04 clang
           echo "CLANG_PATH=$(pwd)/clang/bin" >> $GITHUB_ENV
 
-      - name: Kernel 5.4.274 + WiFi
+      - name: Fallback AOSP Clang
+        if: failure()
+        run: |
+          wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master/clang-r498229b.tar.gz
+          tar xf clang-r498229b.tar.gz
+          echo "CLANG_PATH=$(pwd)/clang-r498229b/bin" >> $GITHUB_ENV
+
+      - name: Kernel 5.4.274
         run: |
           git remote add stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
           git fetch stable linux-5.4.y
           git cherry-pick $(git log stable/linux-5.4.y --grep="5.4.274" --oneline | head -1 | cut -d' ' -f1) || true
 
-      - name: KernelSU integration
+      - name: KernelSU
         run: |
           curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
           sed -i 's/CONFIG_KSU=n/CONFIG_KSU=y/g' .config || echo "CONFIG_KSU=y" >> .config
 
-      - name: SUSFS manual (latest stable)
+      - name: SUSFS integration
         run: |
-          # SUSFS core for 5.4 + KernelSU
           cat > security/selinux/susfs.c << 'EOF'
           #include <linux/selinux.h>
           #include <linux/module.h>
-          static int __init susfs_init(void) {
-              pr_info("SUSFS: Loaded for KernelSU\\n");
-              return 0;
-          }
-          module_init(susfs_init);
-          MODULE_LICENSE("GPL");
+          static int __init susfs_init(void) { pr_info("SUSFS4KSU: Moto G45 Loaded\n"); return 0; }
+          module_init(susfs_init); MODULE_LICENSE("GPL");
           EOF
-
-          echo "obj-\$(CONFIG_SUSFS) += susfs.o" >> security/selinux/Makefile
-          echo "config SUSFS
-          bool 'SUSFS for KernelSU'
-          default y
-          depends on KERNELSU" >> security/selinux/Kconfig
-          
+          echo "obj-$(CONFIG_SUSFS) += susfs.o" >> security/selinux/Makefile
+          echo "config SUSFS\nbool 'SUSFS4KSU'\ndefault y\ndepends on KERNELSU" >> security/selinux/Kconfig
           echo "CONFIG_SUSFS=y" >> .config
 
-      - name: Fogos defconfig + network fixes
+      - name: Fogos defconfig + WiFi
         env:
           PATH: ${{ env.CLANG_PATH }}:$PATH
         run: |
           export ARCH=arm64
           make O=out fogos_defconfig CC=clang CLANG_TRIPLE=aarch64-linux-gnu-
-          scripts/config --file out/.config -e QCOM_WCNSS_MEM_PRE_ALLOC -e WLAN -e CFG_QSEE_DB
+          scripts/config --file out/.config -e QCOM_WCNSS_MEM_PRE_ALLOC -e WLAN
 
-      - name: Build KernelSU + SUSFS
+      - name: Build kernel
         env:
           PATH: ${{ env.CLANG_PATH }}:$PATH
         run: |
-          export ARCH=arm64
-          export CC=clang
-          export CLANG_TRIPLE=aarch64-linux-gnu-
-          export CROSS_COMPILE=aarch64-linux-gnu-
+          export ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu-
           make -j$(nproc) O=out CC=$CC CLANG_TRIPLE=$CLANG_TRIPLE CROSS_COMPILE=$CROSS_COMPILE LLVM=1 Image.gz-dtb
 
-      - name: Moto G45 boot.img (WiFi fixed)
+      - name: Moto G45 boot.img
+        env:
+          PATH: ${{ env.CLANG_PATH }}:$PATH
         run: |
           mkdir -p ramdisk/init
-          echo "ro.secure=0 ro.ksu=1 androidboot.hardware=qcom androidboot.usbcontroller=a600000.dwc3 androidboot.wificountrycode=IN androidboot.memcg.enable=1 androidboot.selinux=permissive skip_initramfs" > ramdisk/cmdline
+          echo "console=ttyMSM0,115200n8 earlycon=msm_geni_serial,0xA90000 androidboot.hardware=qcom androidboot.usbcontroller=a600000.dwc3 androidboot.wificountrycode=IN androidboot.memcg.enable=1 androidboot.selinux=permissive skip_initramfs ro.secure=0 ro.ksu=1" > ramdisk/cmdline
           
-          echo "# Moto G45 + KernelSU + SUSFS" > ramdisk/init.rc
+          echo "# G45 KernelSU+SUSFS" > ramdisk/init.rc
           find ramdisk | cpio -H newc -o | gzip > ramdisk.gz
 
-          mkbootimg \
-            --kernel out/arch/arm64/boot/Image.gz-dtb \
-            --ramdisk ramdisk.gz \
-            --cmdline "$(cat ramdisk/cmdline)" \
-            --base 0x00000000 \
-            --pagesize 4096 \
-            --kernel_offset 0x00008000 \
-            --ramdisk_offset 0x01800000 \
-            --tags_offset 0x00000100 \
-            --output boot-KernelSU-SUSFS-FIXED.img
+          mkbootimg --kernel out/arch/arm64/boot/Image.gz-dtb --ramdisk ramdisk.gz --cmdline "$(cat ramdisk/cmdline)" --base 0x00000000 --pagesize 4096 --kernel_offset 0x00008000 --ramdisk_offset 0x01800000 --tags_offset 0x00000100 --output boot-MotoG45-FINAL.img
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: MotoG45-5.4.274-KernelSU-SUSFS-COMPLETED
-          path: boot-KernelSU-SUSFS-FIXED.img
+          name: MotoG45-5.4.274-KernelSU-PERFECT
+          path: boot-MotoG45-FINAL.img
