@@ -1,92 +1,98 @@
-name: Build Moto G45 Stock Kernel
+name: Build Moto G45 Kernel
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:  # Manual trigger
+  push:
+    branches: [ main ]
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
-      - name: Checkout Kernel Source
-        uses: actions/checkout@v4
-        with:
-          repository: LineageOS/android_kernel_motorola_sm6375
-          ref: lineage-21.0
-          fetch-depth: 1
+    - name: Checkout kernel sources
+      uses: actions/checkout@v4
+      with:
+        repository: Motorola-SM6375-Devs/android_kernel_motorola_sm6375
+        ref: main  # Use 'fifteen' or 'sixteen' for Lineage 21/22; check repo branches
+        fetch-depth: 0
 
-      - name: Install Build Tools
-        run: |
-          sudo apt update
-          sudo apt install -y bc bison build-essential curl flex git kmod libssl-dev libelf-dev gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu pahole llvm lld python3
+    - name: Install build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y bc bison flex libssl-dev make python3 gcc-aarch64-linux-gnu
 
-      - name: Setup Proton Clang
-        run: |
-          git clone https://github.com/kdrag0n/proton-clang.git --depth=1 tools/clang
+    - name: Setup toolchain (Clang + GCC)
+      run: |
+        wget https://github.com/ZyCromerZ/android_prebuilts_clang_host_linux-x86_clang-r498229b/raw/main/clang-r498229b.tar.xz
+        tar xf clang-r498229b.tar.xz
+        export PATH=$(pwd)/clang-r498229b/bin:$PATH
+        aarch64-linux-gnu-gcc --version
 
-      - name: Integrate KernelSU & SUSFS
-        run: |
-          # 1. Setup KernelSU
-          curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash -s main
-          
-          # 2. Setup SUSFS
-          git clone https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 --depth=1 susfs_src
-          cp susfs_src/kernel_patches/fs/susfs.c fs/
-          cp susfs_src/kernel_patches/include/linux/susfs.h include/linux/
-          
-          # 3. Patch KernelSU & Kernel
-          if [ -d "KernelSU" ]; then
-            cp susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch KernelSU/
-            cd KernelSU && patch -p1 < 10_enable_susfs_for_ksu.patch && cd ..
-          fi
-          patch -p1 < susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch || true
+    - name: Apply 5.4.274 patch (optional)
+      run: |
+        # Cherry-pick stable 5.4.274 if base differs
+        git remote add upstream https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
+        git fetch upstream linux-5.4.y
+        git cherry-pick <commit-hash-for-5.4.274>  # Replace with actual SHA from kernel.org
 
-      - name: Configure and Fix Moto DT
-        run: |
-          export ARCH=arm64
-          mkdir -p out
-          
-          # Search for configs - using wildcard to find holi or qgki
-          BASE_CONF=$(find arch/arm64/configs/ -name "*defconfig" | grep -E "holi|qgki" | head -n 1)
-          FOGOS_FRAG=$(find arch/arm64/configs/ -name "*fogo*" | head -n 1)
+    - name: Build kernel
+      env:
+        CC: clang
+        CLANG_TRIPLE: aarch64-linux-gnu-
+        CROSS_COMPILE: aarch64-linux-gnu-
+        CROSS_COMPILE_ARM32: arm-linux-gnueabi-
+      run: |
+        export ARCH=arm64
+        export SUBARCH=arm64
+        make O=out fogos_defconfig
+        make -j$(nproc --all) O=out Image.gz-dtb LLVM=1 LLVM_IAS=1
 
-          if [ -z "$BASE_CONF" ]; then
-            echo "CRITICAL ERROR: No base defconfig found!" && exit 1
-          fi
+    - name: Checkout device tree for boot.img params
+      uses: actions/checkout@v4
+      with:
+        repository: Motorola-SM6375-Devs/android_device_motorola_fogos
+        path: device/motorola/fogos
 
-          echo "Using Base: $BASE_CONF"
-          cp "$BASE_CONF" arch/arm64/configs/stock_defconfig
-          
-          if [ -n "$FOGOS_FRAG" ]; then
-            echo "Merging Fragment: $FOGOS_FRAG"
-            cat "$FOGOS_FRAG" >> arch/arm64/configs/stock_defconfig
-          fi
+    - name: Pack boot.img
+      run: |
+        # Extract cmdline/base from device tree
+        CMDLINE=$(sed -n 's/.*BOARD_KERNEL_CMDLINE := //p' device/motorola/fogos/BoardConfig.mk | tr -d '"')
+        PAGE_SIZE=4096
+        BASE=0x00000000
+        KERNEL_OFFSET=0x00008000
+        RAMDISK_OFFSET=0x01000000
+        TAGS_OFFSET=0x00000100
+        DTB_OFFSET=0x01f00000
+        
+        # Minimal ramdisk (stock-like)
+        mkdir -p ramdisk
+        echo "2.0" > ramdisk/default.prop
+        mkdir -p ramdisk/init
+        echo '#!/system/bin/sh' > ramdisk/init.rc
+        gzip -c ramdisk | tee ramdisk.gz
+        
+        # Build boot.img using libsparse-utils or simple mkbootimg
+        android-toolchain/bin/mkbootimg \
+          --kernel out/arch/arm64/boot/Image.gz-dtb \
+          --ramdisk ramdisk.gz \
+          --cmdline "$CMDLINE androidboot.hardware=fogos" \
+          --base $BASE \
+          --pagesize $PAGE_SIZE \
+          --kernel_offset $KERNEL_OFFSET \
+          --ramdisk_offset $RAMDISK_OFFSET \
+          --tags_offset $TAGS_OFFSET \
+          --dtb_offset $DTB_OFFSET \
+          --output boot.img
 
-          # Apply config
-          make O=out ARCH=arm64 stock_defconfig
-          
-          # Force set flags to avoid interactive LTO/DT prompts
-          ./scripts/config --file out/.config -e CONFIG_BUILD_ARM64_DT_OVERLAY
-          ./scripts/config --file out/.config -e CONFIG_LTO_NONE
-          ./scripts/config --file out/.config -d CONFIG_LTO_CLANG
-          ./scripts/config --file out/.config -e CONFIG_KERNELSU
-          ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS
-          ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS_HAS_MAGIC_MOUNT
-          
-          # Stock ROM Wi-Fi compatibility
-          sed -i "s/^SUBLEVEL = .*/SUBLEVEL = 274/" Makefile
-          ./scripts/config --file out/.config -d CONFIG_MODVERSIONS
-          ./scripts/config --file out/.config -d CONFIG_MODULE_SIG
-          
-          # Finalize silently
-          make O=out ARCH=arm64 olddefconfig
+    - name: Create flashable ZIP
+      run: |
+        mkdir anykernel
+        cp boot.img anykernel/
+        cp out/arch/arm64/boot/Image.gz-dtb anykernel/
+        # Add AnyKernel3 template (download or clone minimal)
+        wget https://raw.githubusercontent.com/osm0sis/AnyKernel3/master/README.md -O anykernel/README.md
+        zip -r MotoG45-kernel-$(date +%Y%m%d).zip anykernel/
 
-      - name: Build Kernel
-        run: |
-          export ARCH=arm64
-          CLANG_BIN=$PWD/tools/clang/bin
-          make -j$(nproc) O=out \
-            ARCH=arm64 \
-            CC=$CLANG_BIN/clang \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            CLANG_TR
+    - name: Upload kernel artifacts
+      uses: actions/upload-artifact@v4
+      
