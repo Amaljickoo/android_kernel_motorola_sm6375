@@ -1,4 +1,4 @@
-name: Build Moto G45 (fogos) Stock-Safe Kernel
+name: Build Moto G45 (fogos) Stock-ROM Kernel
 
 on:
   workflow_dispatch:
@@ -11,7 +11,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: LineageOS/android_kernel_motorola_sm6375
-          ref: lineage-22.1
+          # Using 21.0 because it's better for Non-GKI Stock compatibility
+          ref: lineage-21.0
           fetch-depth: 1
 
       - name: Install Build Tools
@@ -23,12 +24,9 @@ jobs:
         run: |
           git clone https://github.com/kdrag0n/proton-clang.git --depth=1 tools/clang
 
-      - name: Integrate KernelSU
+      - name: Integrate KernelSU & SUSFS
         run: |
           curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash -s main
-
-      - name: Integrate SUSFS
-        run: |
           git clone https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 --depth=1 susfs_src
           cp susfs_src/kernel_patches/fs/susfs.c fs/
           cp susfs_src/kernel_patches/include/linux/susfs.h include/linux/
@@ -36,51 +34,40 @@ jobs:
           cd KernelSU && patch -p1 < 10_enable_susfs_for_ksu.patch && cd ..
           patch -p1 < susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch || true
 
-      - name: Configure Kernel
+      - name: Configure for Stock ROM
         run: |
           export ARCH=arm64
           
-          # 1. LIST ALL CONFIGS (This helps you see what's actually there if it fails)
-          echo "Checking available configurations..."
-          find arch/arm64/configs/ -name "*defconfig" | head -n 30
-          
-          # 2. BETTER DISCOVERY: Search for fogos or holi or sm6375
-          # It looks for fogos first, then falls back to holi
-          CONF_PATH=$(find arch/arm64/configs/ -name "*fogos*" | head -n 1 | sed 's|arch/arm64/configs/||')
-          
-          if [ -z "$CONF_PATH" ]; then
-             echo "Fogos config not found, trying holi/sm6375..."
-             CONF_PATH=$(find arch/arm64/configs/ -name "*holi*" | head -n 1 | sed 's|arch/arm64/configs/||')
+          # Searching for the Motorola-specific 'holi' config
+          # This config contains the Moto-specific drivers for your G45
+          CONF=$(find arch/arm64/configs/vendor/ -name "holi-moto_defconfig" | sed 's|arch/arm64/configs/||')
+          if [ -z "$CONF" ]; then
+            CONF="vendor/holi_defconfig"
           fi
           
-          if [ -z "$CONF_PATH" ]; then
-             echo "ERROR: Could not find any matching defconfig! Check the logs above."
-             exit 1
-          fi
+          echo "Selected Stock Config: $CONF"
+          make O=out ARCH=arm64 $CONF
           
-          echo "Selected Config: $CONF_PATH"
-          make O=out ARCH=arm64 "$CONF_PATH"
-          
-          # Match Stock Versioning (Wi-Fi Fix)
+          # WIFI FIX: Match Stock Sublevel (Crucial for Stock ROM)
           sed -i "s/^SUBLEVEL = .*/SUBLEVEL = 274/" Makefile
           
-          # Enable KSU & SUSFS
+          # KSU & SUSFS Setup
           ./scripts/config --file out/.config -e CONFIG_KERNELSU
           ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS
           ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS_HAS_MAGIC_MOUNT
           
-          # WIFI FIX: Stop stock modules from crashing
+          # STOCK COMPATIBILITY: Disable module signing so stock Wi-Fi works
           ./scripts/config --file out/.config -d CONFIG_MODVERSIONS
           ./scripts/config --file out/.config -d CONFIG_MODULE_SIG
+          ./scripts/config --file out/.config -d CONFIG_MODULE_SIG_ALL
           
           make O=out ARCH=arm64 olddefconfig
 
-      - name: Build Kernel
+      - name: Build Kernel (Wait ~60 mins)
         run: |
           export ARCH=arm64
           CLANG_BIN=$PWD/tools/clang/bin
           
-          # Using 'gcc' for HOSTCC prevents the '.relr.dyn' error you saw earlier
           make -j$(nproc) O=out \
             ARCH=arm64 \
             CC=$CLANG_BIN/clang \
@@ -88,16 +75,10 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             HOSTCC=gcc \
-            HOSTCXX=g++ \
-            LD=ld.lld \
-            AR=$CLANG_BIN/llvm-ar \
-            NM=$CLANG_BIN/llvm-nm \
-            OBJCOPY=$CLANG_BIN/llvm-objcopy \
-            OBJDUMP=$CLANG_BIN/llvm-objdump \
-            STRIP=$CLANG_BIN/llvm-strip
+            LD=ld.lld
 
-      - name: Upload Kernel Image
+      - name: Upload Stock-Safe Image
         uses: actions/upload-artifact@v4
         with:
-          name: Image-G45-fogos-KSU-SUSFS
+          name: Image-G45-Stock-KSU
           path: out/arch/arm64/boot/Image
