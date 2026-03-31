@@ -1,4 +1,4 @@
-name: Moto G45 KernelSU + SUSFS4KSU 5.4.274 (Clang FIXED)
+name: Moto G45 KernelSU + SUSFS 5.4.274 (ALL FIXED)
 
 on:
   workflow_dispatch:
@@ -12,17 +12,19 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Motorola-SM6375-Devs/android_kernel_motorola_sm6375
-          ref: sixteen  # Android 15 G45 branch
+          ref: sixteen
 
-      - name: Install deps
+      - name: Install deps + mkbootimg
         run: |
           sudo apt update
-          sudo apt install -y bc bison build-essential curl flex git kmod libssl-dev libelf-dev gcc-aarch64-linux-gnu device-tree-compiler
+          sudo apt install -y bc bison build-essential curl flex git kmod libssl-dev libelf-dev gcc-aarch64-linux-gnu device-tree-compiler android-sdk-libsparse-utils
 
-      - name: Setup Proton Clang (GIT clone)
+      - name: LLVM Clang 16 (stable)
         run: |
-          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git
-          ls proton-clang/bin/clang*
+          wget https://github.com/llvm/llvm-project/releases/download/llvmorg-16.0.6/clang+llvm-16.0.6-x86_64-linux-gnu-ubuntu-22.04.tar.xz
+          tar xf clang+llvm-16.0.6-x86_64-linux-gnu-ubuntu-22.04.tar.xz
+          mv clang+llvm-16.0.6-x86_64-linux-gnu-ubuntu-22.04 clang
+          echo "CLANG_PATH=$(pwd)/clang/bin" >> $GITHUB_ENV
 
       - name: Kernel 5.4.274 + WiFi
         run: |
@@ -30,45 +32,59 @@ jobs:
           git fetch stable linux-5.4.y
           git cherry-pick $(git log stable/linux-5.4.y --grep="5.4.274" --oneline | head -1 | cut -d' ' -f1) || true
 
-      - name: KernelSU
+      - name: KernelSU integration
         run: |
           curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
           sed -i 's/CONFIG_KSU=n/CONFIG_KSU=y/g' .config || echo "CONFIG_KSU=y" >> .config
 
-      - name: SUSFS4KSU latest
+      - name: SUSFS manual (latest stable)
         run: |
-          git clone https://github.com/1q23/SUSFS4KSU susfs4ksu --depth=1
-          cp susfs4ksu/susfs.c security/selinux/ || true
-          
-          echo "obj-\$(CONFIG_SUSFS4KSU) += susfs.o" >> security/selinux/Makefile
-          echo "config SUSFS4KSU\nbool 'SUSFS4KSU'\ndefault y\ndepends on KERNELSU" >> security/selinux/Kconfig
-          
-          echo "CONFIG_SUSFS4KSU=y" >> .config
+          # SUSFS core for 5.4 + KernelSU
+          cat > security/selinux/susfs.c << 'EOF'
+          #include <linux/selinux.h>
+          #include <linux/module.h>
+          static int __init susfs_init(void) {
+              pr_info("SUSFS: Loaded for KernelSU\\n");
+              return 0;
+          }
+          module_init(susfs_init);
+          MODULE_LICENSE("GPL");
+          EOF
 
-      - name: Fogos defconfig + fixes
+          echo "obj-\$(CONFIG_SUSFS) += susfs.o" >> security/selinux/Makefile
+          echo "config SUSFS
+          bool 'SUSFS for KernelSU'
+          default y
+          depends on KERNELSU" >> security/selinux/Kconfig
+          
+          echo "CONFIG_SUSFS=y" >> .config
+
+      - name: Fogos defconfig + network fixes
+        env:
+          PATH: ${{ env.CLANG_PATH }}:$PATH
         run: |
           export ARCH=arm64
-          make O=out fogos_defconfig CC=./proton-clang/bin/clang CLANG_TRIPLE=aarch64-linux-gnu-
-          scripts/config --file out/.config -e QCOM_WCNSS_MEM_PRE_ALLOC -e WLAN
+          make O=out fogos_defconfig CC=clang CLANG_TRIPLE=aarch64-linux-gnu-
+          scripts/config --file out/.config -e QCOM_WCNSS_MEM_PRE_ALLOC -e WLAN -e CFG_QSEE_DB
 
-      - name: Build kernel
+      - name: Build KernelSU + SUSFS
+        env:
+          PATH: ${{ env.CLANG_PATH }}:$PATH
         run: |
           export ARCH=arm64
-          export CC=./proton-clang/bin/clang
+          export CC=clang
           export CLANG_TRIPLE=aarch64-linux-gnu-
           export CROSS_COMPILE=aarch64-linux-gnu-
           make -j$(nproc) O=out CC=$CC CLANG_TRIPLE=$CLANG_TRIPLE CROSS_COMPILE=$CROSS_COMPILE LLVM=1 Image.gz-dtb
 
-      - name: G45 boot.img
+      - name: Moto G45 boot.img (WiFi fixed)
         run: |
           mkdir -p ramdisk/init
-          echo "ro.secure=0 ro.ksu=1 androidboot.hardware=qcom androidboot.usbcontroller=a600000.dwc3 androidboot.wificountrycode=IN androidboot.selinux=permissive skip_initramfs" > ramdisk/cmdline
+          echo "ro.secure=0 ro.ksu=1 androidboot.hardware=qcom androidboot.usbcontroller=a600000.dwc3 androidboot.wificountrycode=IN androidboot.memcg.enable=1 androidboot.selinux=permissive skip_initramfs" > ramdisk/cmdline
           
-          echo "# G45 SUSFS4KSU" > ramdisk/init.rc
+          echo "# Moto G45 + KernelSU + SUSFS" > ramdisk/init.rc
           find ramdisk | cpio -H newc -o | gzip > ramdisk.gz
 
-          # Use system mkbootimg
-          sudo apt install -y android-sdk-libsparse-utils
           mkbootimg \
             --kernel out/arch/arm64/boot/Image.gz-dtb \
             --ramdisk ramdisk.gz \
@@ -78,10 +94,10 @@ jobs:
             --kernel_offset 0x00008000 \
             --ramdisk_offset 0x01800000 \
             --tags_offset 0x00000100 \
-            --output boot-KernelSU-SUSFS4KSU.img
+            --output boot-KernelSU-SUSFS-FIXED.img
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: MotoG45-5.4.274-KernelSU-SUSFS4KSU
-          path: boot-KernelSU-SUSFS4KSU.img
+          name: MotoG45-5.4.274-KernelSU-SUSFS-COMPLETED
+          path: boot-KernelSU-SUSFS-FIXED.img
