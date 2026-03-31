@@ -26,47 +26,51 @@ jobs:
 
     - name: Integrate SUSFS
       run: |
-        # 1. Clone SUSFS sources for Kernel 5.4
         git clone https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 --depth=1 susfs_src
-        
-        # 2. Copy SUSFS core files to kernel tree
         cp susfs_src/kernel_patches/fs/susfs.c fs/
         cp susfs_src/kernel_patches/include/linux/susfs.h include/linux/
         
-        # 3. Patch KernelSU to support SUSFS (Essential for hiding root)
-        cp susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch KernelSU/
-        cd KernelSU && patch -p1 < 10_enable_susfs_for_ksu.patch && cd ..
+        # Patch KernelSU for SUSFS
+        if [ -d "KernelSU" ]; then
+          cp susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch KernelSU/
+          cd KernelSU && patch -p1 < 10_enable_susfs_for_ksu.patch && cd ..
+        fi
         
-        # 4. Patch the main Kernel for SUSFS support
+        # Patch Kernel for SUSFS
         patch -p1 < susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch || true
 
     - name: Configure for Stock ROM & Network
       run: |
         export ARCH=arm64
         
-        # Force Kernel Sublevel to 274 (Matching your Android 15 build)
+        # FIX 1: Force Kernel Sublevel to 274 (Wi-Fi/BT Fix)
         sed -i 's/^SUBLEVEL = .*/SUBLEVEL = 274/' Makefile
         
-        # Prevent "-dirty" suffix which kills Stock Wi-Fi drivers
+        # FIX 2: Prevent "-dirty" suffix (Wi-Fi Driver Match Fix)
         sed -i 's/echo "+"/#echo "+"/' scripts/setlocalversion
         
-        # Find and prepare the Motorola holi defconfig
-        CONF_PATH=$(find arch/arm64/configs/vendor/ -name "*holi-qgki_defconfig*" -o -name "*holi_defconfig*" | head -n 1)
-        CONF_NAME=$(basename $CONF_PATH)
-        echo "CONF_NAME=$CONF_NAME" >> $GITHUB_ENV
-        make O=out ARCH=arm64 $CONF_NAME
+        # FIX 3: Find the Motorola holi defconfig automatically
+        CONF_PATH=$(find arch/arm64/configs/ -name "*holi*defconfig*" | head -n 1)
+        
+        if [ -z "$CONF_PATH" ]; then
+          echo "ERROR: No holi defconfig found! Listing available configs:"
+          find arch/arm64/configs/ -name "*defconfig*"
+          exit 1
+        fi
+        
+        CONF_NAME=$(basename "$CONF_PATH")
+        echo "Using Config: $CONF_NAME"
+        
+        # 4. Generate .config
+        make O=out ARCH=arm64 "$CONF_NAME"
 
-        # --- Enable Features via scripts/config ---
-        # KernelSU & SUSFS
+        # FIX 4: Enable Root & Security Hiding
         ./scripts/config --file out/.config -e CONFIG_KERNELSU
         ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS
         ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS_HAS_MAGIC_MOUNT
         
-        # Wi-Fi & Network Stability
+        # FIX 5: Stock ROM Network Drivers
         ./scripts/config --file out/.config -e CONFIG_WLAN
-        ./scripts/config --file out/.config -e CONFIG_QCOM_WCNSS_MEM_PRE_ALLOC
-        
-        # Disable Module Signing (Crucial for Stock ROM Wi-Fi)
         ./scripts/config --file out/.config -d CONFIG_MODULE_SIG
         ./scripts/config --file out/.config -d CONFIG_MODULE_SIG_ALL
         
@@ -82,12 +86,11 @@ jobs:
     - name: Organize Artifacts
       run: |
         mkdir -p deploy
-        # We need the Kernel Image and the DTBOs for a full flash
         find out/arch/arm64/boot/ -name "Image.gz*" -exec cp {} deploy/ \;
-        find out/arch/arm64/boot/dts/vendor/qcom/ -name "*.dtbo" -exec cp {} deploy/ \;
+        find out/arch/arm64/boot/dts/ -name "*.dtbo" -exec cp {} deploy/ \; || echo "No DTBOs"
 
     - name: Upload Build
       uses: actions/upload-artifact@v4
       with:
-        name: Moto-G45-SUSFS-Final
+        name: Moto-G45-Final-With-Fixes
         path: deploy/*
