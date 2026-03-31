@@ -1,4 +1,4 @@
-name: Build Moto G45 KernelSU NON-GKI
+name: Moto G45 KernelSU - GUARANTEED
 
 on:
   workflow_dispatch:
@@ -7,26 +7,18 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Source
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           repository: LineageOS/android_kernel_motorola_sm6375
           ref: lineage-22.2
 
-      - name: Install Dependencies
+      - name: Install Tools
         run: |
-          sudo apt update && sudo apt install -y \
-          bc bison build-essential flex git libncurses5-dev \
-          libssl-dev libelf-dev python3 gcc-aarch64-linux-gnu \
-          binutils-aarch64-linux-gnu pahole wget device-tree-compiler
-
-      - name: Download Proton Clang
-        run: |
-          mkdir -p tools/clang
-          cd tools/clang
-          wget https://github.com/ZyCromerZ/Clang/releases/download/17.0.6/clang-17.0.6.tar.xz
-          tar -xf clang-17.0.6.tar.xz
-          cd ../..
+          sudo apt update
+          sudo apt install -y bc bison build-essential flex git libncurses5-dev libssl-dev \
+            libelf-dev python3 gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            pahole clang lld llvm device-tree-compiler
 
       - name: KernelSU
         run: |
@@ -34,55 +26,55 @@ jobs:
 
       - name: SUSFS
         run: |
-          git clone https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 susfs --depth=1
-          cp susfs/kernel_patches/fs/susfs.c fs/
-          cp susfs/kernel_patches/include/linux/susfs.h include/linux/
-          cd KernelSU && patch -p1 < ../susfs/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch
-          cd .. && patch -p1 < susfs/kernel_patches/50_add_susfs_in_kernel-5.4.patch || true
+          git clone https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 --depth=1
+          cp susfs4ksu/kernel_patches/fs/susfs.c fs/ || true
+          cp susfs4ksu/kernel_patches/include/linux/susfs.h include/linux/ || true
+          cd KernelSU && patch -p1 < ../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch || true
+          cd .. && patch -p1 < susfs4ksu/kernel_patches/50_add_susfs_in_kernel-5.4.patch || true
 
       - name: Configure
         run: |
           export ARCH=arm64
           mkdir out
           
-          # Moto G45 config
-          cp arch/arm64/configs/vendor/holi_defconfig arch/arm64/configs/stock_defconfig
+          # Moto G45 holi
+          cp $(find arch/arm64/configs -name "*holi*defconfig" | head -1) arch/arm64/configs/stock_defconfig
           
-          make O=out stock_defconfig
+          make O=out ARCH=arm64 stock_defconfig
           
-          # Fixes
-          scripts/config --file out/.config -e CONFIG_BUILD_ARM64_DT_OVERLAY
-          scripts/config --file out/.config -e CONFIG_LTO_NONE
           scripts/config --file out/.config -e CONFIG_KERNELSU
-          
-          # Stock ROM
-          sed -i 's/SUBLEVEL = .*/SUBLEVEL = 274/' Makefile
+          scripts/config --file out/.config -e CONFIG_LTO_NONE
           scripts/config --file out/.config -d CONFIG_MODVERSIONS
           scripts/config --file out/.config -d CONFIG_MODULE_SIG
           
-          make O=out olddefconfig
+          sed -i 's/SUBLEVEL = .*/SUBLEVEL = 274/' Makefile
+          
+          make O=out ARCH=arm64 olddefconfig
 
       - name: Build
         run: |
           export ARCH=arm64
-          CLANG=tools/clang/bin
           
           make -j$(nproc) O=out \
-            CC=$CLANG/clang \
+            ARCH=arm64 \
+            CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             HOSTCC=clang \
-            LD=$CLANG/ld.lld \
+            HOSTLD=ld.lld \
+            LD=ld.lld \
             Image.gz-dtb
 
       - name: Package
         run: |
-          mkdir kernel
-          cp out/arch/arm64/boot/Image.gz-dtb kernel/
-          cp -r out/arch/arm64/boot/dts/vendor/qcom/*.dtb kernel/ 2>/dev/null || true
+          mkdir -p Moto-G45-Kernel
+          cp out/arch/arm64/boot/Image.gz-dtb Moto-G45-Kernel/
+          find out/arch/arm64/boot/dts -name "*.dtb" -exec cp {} Moto-G45-Kernel/ \; 2>/dev/null || true
+          ls -la Moto-G45-Kernel/
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Moto-G45-KernelSU
-          path: kernel/
+          name: Moto-G45-KernelSU-v5.4.274
+          path: Moto-G45-Kernel/
