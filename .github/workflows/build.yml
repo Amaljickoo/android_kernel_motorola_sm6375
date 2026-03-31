@@ -1,4 +1,4 @@
-name: Moto G45 KernelSU - FIXED HEADERS
+name: Build Moto G45 Stock Kernel
 
 on:
   workflow_dispatch:
@@ -7,36 +7,76 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout Kernel Source
         uses: actions/checkout@v4
         with:
           repository: LineageOS/android_kernel_motorola_sm6375
-          ref: lineage-22.2
+          ref: lineage-22.1
+          fetch-depth: 1
 
-      - name: Install Tools
+      - name: Install Build Tools
         run: |
           sudo apt update
-          sudo apt install -y bc bison build-essential flex git libncurses5-dev \
-            libssl-dev libelf-dev python3 gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
-            pahole clang lld llvm device-tree-compiler
+          sudo apt install -y bc bison build-essential curl flex git kmod libssl-dev libelf-dev gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu pahole llvm lld python3
 
-      - name: Manual KernelSU (FIX HEADERS)
+      - name: Setup Proton Clang
         run: |
-          # Download KernelSU manually
-          git clone --depth=1 https://github.com/tiann/KernelSU KernelSU
-          cd KernelSU/kernel
-          make -j$(nproc)
-          make modules_install INSTALL_MOD_PATH=../modules
-          cd ../..
-          
-          # Copy kernel modules
-          mkdir -p out/modules
-          cp KernelSU/kernel/ksu.ko out/modules/
-          
-          # Create uapi headers
-          mkdir -p include/uapi/linux
-          echo '#define KSU_VERSION "v0.9.3"' > include/uapi/linux/app_profile.h
-          echo '#define KSU_NEW_DCACHE_FLUSH 0' >> include/uapi/linux/app_profile.h
+          git clone https://github.com/kdrag0n/proton-clang.git --depth=1 tools/clang
 
-      - name: Configure
-        run:
+      - name: Integrate KernelSU & SUSFS
+        run: |
+          # 1. Setup KernelSU
+          curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash -s main
+          
+          # 2. Setup SUSFS
+          git clone https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 --depth=1 susfs_src
+          cp susfs_src/kernel_patches/fs/susfs.c fs/
+          cp susfs_src/kernel_patches/include/linux/susfs.h include/linux/
+          
+          # 3. Apply SUSFS Patches
+          cp susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch KernelSU/
+          cd KernelSU && patch -p1 < 10_enable_susfs_for_ksu.patch && cd ..
+          patch -p1 < susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch || true
+
+      - name: Configure and Fix Moto DT
+        run: |
+          export ARCH=arm64
+          mkdir -p out
+          
+          # Merge configs
+          BASE_CONF=$(find arch/arm64/configs/vendor/ -name "holi-qgki_defconfig" -o -name "holi_defconfig" | head -n 1)
+          FOGOS_FRAG=$(find arch/arm64/configs/vendor/ -name "moto-holi-fogo.config" -o -name "*fogos*" | head -n 1)
+          cat "$BASE_CONF" > arch/arm64/configs/stock_defconfig
+          if [ -f "$FOGOS_FRAG" ]; then
+            cat "$FOGOS_FRAG" >> arch/arm64/configs/stock_defconfig
+          fi
+
+          make O=out ARCH=arm64 stock_defconfig
+          
+          # Fix the "Moto DT w/o overlay" error
+          ./scripts/config --file out/.config -e CONFIG_BUILD_ARM64_DT_OVERLAY
+          
+          # Force LTO to None to avoid the interactive prompt [1-2?]
+          ./scripts/config --file out/.config -e CONFIG_LTO_NONE
+          ./scripts/config --file out/.config -d CONFIG_LTO_CLANG
+          
+          # Enable KernelSU & SUSFS in config
+          ./scripts/config --file out/.config -e CONFIG_KERNELSU
+          ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS
+          ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS_HAS_MAGIC_MOUNT
+          
+          # Wi-Fi compatibility
+          sed -i "s/^SUBLEVEL = .*/SUBLEVEL = 274/" Makefile
+          ./scripts/config --file out/.config -d CONFIG_MODVERSIONS
+          ./scripts/config --file out/.config -d CONFIG_MODULE_SIG
+          
+          # Apply config changes silently
+          make O=out ARCH=arm64 olddefconfig
+
+      - name: Build Kernel
+        run: |
+          export ARCH=arm64
+          CLANG_BIN=$PWD/tools/clang/bin
+          make -j$(nproc) O=out \
+            ARCH=arm64 \
+            CC=$CLANG_BIN/clang \
