@@ -1,4 +1,4 @@
-name: Moto G45 KernelSU - PERFECT BUILD
+name: Moto G45 KernelSU - WORKING
 
 on:
   workflow_dispatch:
@@ -20,21 +20,71 @@ jobs:
             libelf-dev python3 gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu pahole \
             clang lld llvm device-tree-compiler
 
-      - name: KernelSU Only (No SUSFS)
+      - name: KernelSU
         run: |
           curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash -
 
-      - name: Configure Moto G45
+      - name: Configure Kernel
         run: |
           export ARCH=arm64
-          mkdir out
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          mkdir -p out
           
-          # Moto G45 holi config
+          # Moto G45 config
           DEFCONFIG=$(find arch/arm64/configs -name "*holi*" -name "*defconfig" | head -1)
           echo "Using: $DEFCONFIG"
           cp "$DEFCONFIG" arch/arm64/configs/stock_defconfig
           
+          # Initial config
           make O=out ARCH=arm64 stock_defconfig
           
-          # Essential fixes
-          scripts/config --file out
+          # Fix path and enable KernelSU
+          pushd .
+          cd ..
+          scripts/config --file out/.config -e CONFIG_BUILD_ARM64_DT_OVERLAY
+          scripts/config --file out/.config -e CONFIG_LTO_NONE
+          scripts/config --file out/.config -d CONFIG_LTO_CLANG
+          scripts/config --file out/.config -e CONFIG_KERNELSU
+          scripts/config --file out/.config -d CONFIG_MODVERSIONS
+          scripts/config --file out/.config -d CONFIG_MODULE_SIG
+          popd
+          
+          # Stock compatibility
+          sed -i 's/SUBLEVEL = .*/SUBLEVEL = 274/' out/Makefile
+          
+          # Final config
+          make O=out ARCH=arm64 olddefconfig
+          echo "✅ Config ready!"
+
+      - name: Build Kernel
+        run: |
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          
+          make -j$(nproc) O=out \
+            ARCH=arm64 \
+            CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            HOSTCC=clang \
+            HOSTLD=ld.lld \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            Image.gz-dtb dtbs
+
+      - name: Package
+        run: |
+          mkdir -p Moto-G45-Kernel
+          cp out/arch/arm64/boot/Image.gz-dtb Moto-G45-Kernel/
+          find out/arch/arm64/boot/dts -name "*.dtb" -o -name "*.dtbo" | head -10 | xargs -I {} cp {} Moto-G45-Kernel/
+          ls -lh Moto-G45-Kernel/
+          echo "✅ Build complete!"
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: Moto-G45-KernelSU-v5.4.274
+          path: Moto-G45-Kernel/
