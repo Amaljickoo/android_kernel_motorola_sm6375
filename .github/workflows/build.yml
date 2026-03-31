@@ -24,7 +24,6 @@ jobs:
 
     - name: Create stock cmdline fallback
       run: |
-        # Create safe fallback if stock_cmdline missing
         cat > stock_cmdline << 'EOF'
         console=ttyMSM0,115200n8 earlycon=msm_geni_serial,0xA90000 androidboot.hardware=qcom androidboot.usbcontroller=a600000.dwc3 androidboot.memcg.enable=1 androidboot.selinux=permissive skip_initramfs
         EOF
@@ -35,26 +34,37 @@ jobs:
         grep -q '^CONFIG_WLAN=' defconfig || echo "CONFIG_WLAN=y" >> defconfig
         grep -q '^CONFIG_SUSFS=' defconfig || echo "CONFIG_SUSFS=m" >> defconfig
 
-    - name: SUSFS module (base64 fixed)
+    - name: SUSFS module FIXED
       run: |
         mkdir -p security/selinux/hooks
-        # Fixed base64 SUSFS source
-        echo "IyMgaW5jbHVkZSA8bGludXgvbW9kdWxlLmg+CmluY2x1ZGUgPGxpbnV4L2tlcm5lbC5oPgoKc3RhdGljIGludCBzdXNmc19pbml0KHZvaWQpIHsKICAgIHByaW50aygiU1VTRlM0S1NVOiBNb3RvIEc0NSBsb2FkZWQhXG4iKTsKICAgIHJldHVybiAwOwp9CgpzdGF0aWMgdm9pZCBzdXNmc19leGl0KHZvaWQpIHsKfQoKbW9kdWxlX2luaXQoXCJzdXNmc19pbml0XCIpOwptb2R1bGVfZXhpdChzdXNmc19leGl0KTsKTU9EVUVMRV9MSUNFTlNFKCJHUEwiKTs=" | base64 -d > security/selinux/hooks/susfs.c
+        echo '#include ux/module.h>
+#include ux/kernel.h>
+static int __init susfs_init(void) {
+    printk(KERN_INFO "SUSFS4KSU: Moto G45 loaded\n");
+    return 0;
+}
+module_init(susfs_init);
+MODULE_LICENSE("GPL");' > security/selinux/hooks/susfs.c
         chmod 644 security/selinux/hooks/susfs.c
 
-        # Safe Makefile append
         if [ -f security/selinux/Makefile ]; then
           grep -q 'hooks/susfs.o' security/selinux/Makefile || echo "obj-\$(CONFIG_SUSFS) += hooks/susfs.o" >> security/selinux/Makefile
+        else
+          mkdir -p security/selinux
+          echo "obj-\$(CONFIG_SUSFS) += hooks/susfs.o" > security/selinux/Makefile
         fi
 
-        # Safe Kconfig append
         if [ -f security/selinux/Kconfig ]; then
-          grep -q 'config SUSFS' security/selinux/Kconfig || cat >> security/selinux/Kconfig << 'KCFG'
-config SUSFS
+          grep -q 'config SUSFS' security/selinux/Kconfig || echo 'config SUSFS
     tristate "SUSFS4KSU kernel support"
     depends on KSU
-    default m
-KCFG
+    default m' >> security/selinux/Kconfig
+        else
+          mkdir -p security/selinux
+          echo 'config SUSFS
+    tristate "SUSFS4KSU kernel support"
+    depends on KSU
+    default m' > security/selinux/Kconfig
         fi
 
     - name: Configure kernel conservatively
@@ -62,13 +72,15 @@ KCFG
         export ARCH=arm64
         export CROSS_COMPILE=aarch64-linux-gnu-
         make O=out defconfig
-        scripts/config --file out/.config -e QCOM_WCNSS_MEM_PRE_ALLOC -e WLAN -m SUSFS
+        scripts/config --file out/.config -e QCOM_WCNSS_MEM_PRE_ALLOC
+        scripts/config --file out/.config -e WLAN
+        scripts/config --file out/.config -m SUSFS
         make O=out olddefconfig
 
     - name: Build kernel
       run: |
-        export ARCH=${{ env.ARCH }}
-        export CROSS_COMPILE=${{ env.CROSS_COMPILE }}
+        export ARCH=arm64
+        export CROSS_COMPILE=aarch64-linux-gnu-
         make -j$(nproc) O=out CC=aarch64-linux-gnu-gcc Image.gz-dtb
 
     - name: Minimal test ramdisk
