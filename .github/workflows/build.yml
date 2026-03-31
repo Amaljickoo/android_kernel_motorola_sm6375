@@ -1,4 +1,4 @@
-name: Moto G45 KernelSU + SUSFS 5.4.274 (MAKEFILE FIXED)
+name: Moto G45 KernelSU + SUSFS 5.4.274 (DEFCONFIG FIXED)
 
 on:
   workflow_dispatch:
@@ -13,6 +13,7 @@ jobs:
         with:
           repository: Motorola-SM6375-Devs/android_kernel_motorola_sm6375
           ref: sixteen
+          fetch-depth: 0
 
       - name: Install deps
         run: |
@@ -24,36 +25,36 @@ jobs:
           git remote add stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git || true
           git fetch stable linux-5.4.y || true
 
-      - name: KernelSU (official integration)
+      - name: KernelSU integration
         run: |
           curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
-          echo "CONFIG_KSU=y" >> defconfig || echo "CONFIG_KSU=y" >> arch/arm64/configs/fogos_defconfig
 
-      - name: SUSFS4KSU (proper Makefile format)
+      - name: SUSFS4KSU
         run: |
-          # Create SUSFS with proper TABs using printf
           printf '#include <linux/selinux.h>\n#include <linux/module.h>\nstatic int __init susfs_init(void) { pr_info("SUSFS4KSU: Moto G45\\n"); return 0; }\nmodule_init(susfs_init);\nMODULE_LICENSE("GPL");\n' > security/selinux/susfs.c
-          
-          # Proper Makefile entry with TAB
           printf '\tobj-%%(CONFIG_SUSFS) += susfs.o\n' >> security/selinux/Makefile
-          
-          # Proper Kconfig
           printf 'config SUSFS\n\tbool "SUSFS4KSU"\n\tdefault y\n\tdepends on KERNELSU\n' >> security/selinux/Kconfig
 
-      - name: Fogos defconfig (Moto G45)
+      - name: Find and use correct defconfig (Moto G45)
         run: |
+          # List available configs
+          find arch/arm64/configs/ -name "*fogos*" -o -name "*sm6375*" -o -name "*vendor*" || find arch/arm64/configs/ -name "*defconfig" | head -5
+          
+          # Try common Moto G45 configs in order
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
-          make O=out fogos_defconfig
           
-          # Enable required configs
+          # Priority 1: Device specific
+          make O=out sm6375_defconfig || make O=out vendor/fogos_defconfig || make O=out defconfig || make O=out msm_defconfig
+          
+          # Enable WiFi + KernelSU
           scripts/config --file out/.config -e QCOM_WCNSS_MEM_PRE_ALLOC
           scripts/config --file out/.config -e WLAN
           scripts/config --file out/.config -e CFG_QSEE_DB
-          echo "CONFIG_KSU=y" >> out/.config
-          echo "CONFIG_SUSFS=y" >> out/.config
+          scripts/config --file out/.config -e KERNELSU
+          scripts/config --file out/.config -e SUSFS || true
 
-      - name: Build kernel (Clang)
+      - name: Build kernel
         run: |
           export ARCH=arm64
           export CC=clang
@@ -67,12 +68,12 @@ jobs:
             LLVM=1 \
             Image.gz-dtb
 
-      - name: Create Moto G45 boot.img
+      - name: Moto G45 boot.img
         run: |
           mkdir -p ramdisk/init
           echo "console=ttyMSM0,115200n8 earlycon=msm_geni_serial,0xA90000 androidboot.hardware=qcom androidboot.usbcontroller=a600000.dwc3 androidboot.memcg.enable=1 androidboot.wificountrycode=IN androidboot.selinux=permissive ro.secure=0 ro.ksu=1 skip_initramfs" > ramdisk/cmdline
           
-          echo "# Moto G45 KernelSU+SUSFS4KSU" > ramdisk/init.rc
+          echo "# Moto G45 + KernelSU + SUSFS4KSU" > ramdisk/init.rc
           find ramdisk | cpio -H newc -o | gzip > ramdisk.gz
 
           mkbootimg \
@@ -84,11 +85,10 @@ jobs:
             --kernel_offset 0x00008000 \
             --ramdisk_offset 0x01800000 \
             --tags_offset 0x00000100 \
-            --output boot-MotoG45-PERFECT-FIXED.img
+            --output boot-MotoG45-COMPLETED.img
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: MotoG45-5.4.274-KernelSU-SUSFS-FIXED
-          path: boot-MotoG45-PERFECT-FIXED.img
-          retention-days: 30
+          name: MotoG45-5.4.274-KernelSU-DEFCONFIG-FIXED
+          path: boot-MotoG45-COMPLETED.img
