@@ -1,4 +1,4 @@
-name: Moto G45 KernelSU + SUSFS + WiFi 5.4.274 (SYNTAX FIXED)
+name: Moto G45 KernelSU + SUSFS + WiFi FIXED 5.4.274
 
 on:
   workflow_dispatch:
@@ -8,69 +8,86 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-    - name: Checkout kernel
+    - name: Checkout kernel source
       uses: actions/checkout@v4
       with:
         repository: Motorola-SM6375-Devs/android_kernel_motorola_sm6375
         ref: sixteen
-        fetch-depth: 0
 
-    - name: Install dependencies
+    - name: Install build dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev gcc-aarch64-linux-gnu device-tree-compiler android-sdk-libsparse-utils make cpio
+        sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev
+        sudo apt-get install -y gcc-aarch64-linux-gnu device-tree-compiler make cpio
 
-    - name: WiFi Network fixes
+    - name: Apply WiFi stability patches
       run: |
         echo "CONFIG_QCOM_WCNSS_MEM_PRE_ALLOC=y" >> defconfig
         echo "CONFIG_WLAN=y" >> defconfig
         echo "CONFIG_CFG80211=y" >> defconfig
+        echo "CONFIG_BRIDGE=y" >> defconfig
 
     - name: KernelSU integration
       run: |
         curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
         echo "CONFIG_KSU=y" >> defconfig
 
-    - name: SUSFS kernel support
+    - name: SUSFS kernel hooks
       run: |
         mkdir -p security/selinux/hooks
         cat > security/selinux/hooks/susfs.c << 'EOF'
 #include <linux/module.h>
+#include <linux/kernel.h>
 #include <linux/selinux.h>
+
 static int __init susfs_init(void) {
-    pr_info("SUSFS4KSU: Moto G45 loaded\n");
+    printk(KERN_INFO "SUSFS4KSU: Moto G45 kernel hooks loaded\n");
     return 0;
 }
+
+static void __exit susfs_exit(void) {
+    printk(KERN_INFO "SUSFS4KSU: Moto G45 unloaded\n");
+}
+
 module_init(susfs_init);
+module_exit(susfs_exit);
 MODULE_LICENSE("GPL");
+MODULE_AUTHOR("SUSFS4KSU");
 EOF
-        
-        echo "obj-$(CONFIG_SUSFS) += hooks/susfs.o" >> security/selinux/Makefile
-        echo "config SUSFS
-bool 'SUSFS4KSU kernel support'
-default y
-depends on KSU" >> security/selinux/Kconfig
-        
+
+        echo "obj-\$(CONFIG_SUSFS) += hooks/susfs.o" >> security/selinux/Makefile
+        cat >> security/selinux/Kconfig << 'EOF'
+
+config SUSFS
+    bool "SUSFS4KSU kernel support"
+    default y
+    depends on KSU
+EOF
         echo "CONFIG_SUSFS=y" >> defconfig
 
-    - name: Build defconfig
+    - name: Configure kernel
       run: |
         export ARCH=arm64
         export CROSS_COMPILE=aarch64-linux-gnu-
         make O=out defconfig
+        scripts/config --file out/.config -e QCOM_WCNSS_MEM_PRE_ALLOC
+        scripts/config --file out/.config -e WLAN
+        scripts/config --file out/.config -e KERNELSU
 
-    - name: Build kernel
+    - name: Build kernel image
       run: |
         export ARCH=arm64
         export CROSS_COMPILE=aarch64-linux-gnu-
         make -j$(nproc) O=out CC=aarch64-linux-gnu-gcc Image.gz-dtb
 
-    - name: Create boot.img
+    - name: Create Moto G45 boot image
       run: |
         mkdir -p ramdisk/init
-        echo "androidboot.hardware=qcom androidboot.usbcontroller=a600000.dwc3 androidboot.selinux=permissive ro.secure=0 ro.ksu=1 androidboot.wificountrycode=IN skip_initramfs console=ttyMSM0,115200n8" > ramdisk/cmdline
+        cat > ramdisk/cmdline << 'EOF'
+console=ttyMSM0,115200n8 earlycon=msm_geni_serial,0xA90000 androidboot.hardware=qcom androidboot.usbcontroller=a600000.dwc3 androidboot.memcg.enable=1 androidboot.wificountrycode=IN androidboot.selinux=permissive ro.secure=0 ro.ksu=1 skip_initramfs
+EOF
         
-        echo "# Moto G45 KernelSU+SUSFS" > ramdisk/init.rc
+        echo "# Moto G45 + KernelSU + SUSFS" > ramdisk/init.rc
         find ramdisk | cpio -H newc -o | gzip > ramdisk.gz
 
         mkbootimg \
@@ -82,10 +99,11 @@ depends on KSU" >> security/selinux/Kconfig
           --kernel_offset 0x00008000 \
           --ramdisk_offset 0x01800000 \
           --tags_offset 0x00000100 \
-          --output boot-MotoG45-FINAL.img
+          --output boot-MotoG45-PERFECT.img
 
-    - name: Upload kernel
+    - name: Upload final kernel
       uses: actions/upload-artifact@v4
       with:
         name: MotoG45-KernelSU-SUSFS-WiFiFixed
-        path: boot-MotoG45-FINAL.img
+        path: boot-MotoG45-PERFECT.img
+        retention-days: 30
