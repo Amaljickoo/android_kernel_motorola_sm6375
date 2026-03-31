@@ -11,8 +11,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: LineageOS/android_kernel_motorola_sm6375
-          # Fogos is a 2024 device, it lives in the 23.2 branch
-          ref: lineage-23.2
+          ref: lineage-22.2 # Most stable branch for G45/SM6375-AC
           fetch-depth: 1
 
       - name: Install Build Tools
@@ -32,30 +31,31 @@ jobs:
           cp susfs_src/kernel_patches/include/linux/susfs.h include/linux/
           cp susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch KernelSU/
           cd KernelSU && patch -p1 < 10_enable_susfs_for_ksu.patch && cd ..
-          # Applying SUSFS patches to the kernel tree
           patch -p1 < susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch || true
 
-      - name: Configure for Stock ROM (Fogos)
+      - name: Configure Fogos Fragments
         run: |
           export ARCH=arm64
-          
-          # We search for fogos_defconfig first, then fallback to holi-moto
-          CONF_PATH=$(find arch/arm64/configs/vendor/ -name "fogos_defconfig" -o -name "holi-moto_defconfig" -o -name "holi_defconfig" | head -n 1)
-          
-          if [ -z "$CONF_PATH" ]; then
-            echo "ERROR: Could not find fogos or holi defconfig in this branch!"
-            exit 1
-          fi
-          
-          echo "Found config at: $CONF_PATH"
-          
-          # Copy to root configs so 'make' can see it without path issues
-          cp "$CONF_PATH" arch/arm64/configs/stock_defconfig
-          
           mkdir -p out
+          
+          # Step 1: Find the Base Config (Holi)
+          BASE_CONF=$(find arch/arm64/configs/vendor/ -name "holi-qgki_defconfig" -o -name "holi_defconfig" | head -n 1)
+          
+          # Step 2: Find the Fogos Fragment
+          FOGOS_FRAG=$(find arch/arm64/configs/vendor/ -name "moto-holi-fogo.config" -o -name "*fogos*" | head -n 1)
+          
+          echo "Using Base: $BASE_CONF"
+          echo "Using Fragment: $FOGOS_FRAG"
+
+          # Step 3: Merge them into one 'stock_defconfig'
+          cat "$BASE_CONF" > arch/arm64/configs/stock_defconfig
+          if [ -f "$FOGOS_FRAG" ]; then
+            cat "$FOGOS_FRAG" >> arch/arm64/configs/stock_defconfig
+          fi
+
           make O=out ARCH=arm64 stock_defconfig
           
-          # WIFI FIX: Match Stock Sublevel for SM6375
+          # WIFI FIX: Match Stock Sublevel
           sed -i "s/^SUBLEVEL = .*/SUBLEVEL = 274/" Makefile
           
           # KSU & SUSFS Setup
@@ -63,7 +63,7 @@ jobs:
           ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS
           ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS_HAS_MAGIC_MOUNT
           
-          # STOCK COMPATIBILITY: Disable module signing so stock Wi-Fi/BT work
+          # STOCK COMPATIBILITY: Disable module signing for Stock Wi-Fi
           ./scripts/config --file out/.config -d CONFIG_MODVERSIONS
           ./scripts/config --file out/.config -d CONFIG_MODULE_SIG
           ./scripts/config --file out/.config -d CONFIG_MODULE_SIG_ALL
@@ -84,8 +84,8 @@ jobs:
             HOSTCC=gcc \
             LD=ld.lld
 
-      - name: Upload Image
+      - name: Upload Stock Image
         uses: actions/upload-artifact@v4
         with:
-          name: Image-G45-Fogos-KSU
+          name: Image-G45-Fogos-Stock
           path: out/arch/arm64/boot/Image
