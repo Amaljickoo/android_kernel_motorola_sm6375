@@ -1,4 +1,4 @@
-name: Moto G45 KernelSU - WORKING
+name: Moto G45 KernelSU - PATH FIXED
 
 on:
   workflow_dispatch:
@@ -38,16 +38,13 @@ jobs:
           # Initial config
           make O=out ARCH=arm64 stock_defconfig
           
-          # Fix path and enable KernelSU
-          pushd .
-          cd ..
-          scripts/config --file out/.config -e CONFIG_BUILD_ARM64_DT_OVERLAY
-          scripts/config --file out/.config -e CONFIG_LTO_NONE
-          scripts/config --file out/.config -d CONFIG_LTO_CLANG
-          scripts/config --file out/.config -e CONFIG_KERNELSU
-          scripts/config --file out/.config -d CONFIG_MODVERSIONS
-          scripts/config --file out/.config -d CONFIG_MODULE_SIG
-          popd
+          # FULL PATH to scripts/config
+          ./scripts/config --file out/.config -e CONFIG_BUILD_ARM64_DT_OVERLAY
+          ./scripts/config --file out/.config -e CONFIG_LTO_NONE
+          ./scripts/config --file out/.config -d CONFIG_LTO_CLANG
+          ./scripts/config --file out/.config -e CONFIG_KERNELSU
+          ./scripts/config --file out/.config -d CONFIG_MODVERSIONS
+          ./scripts/config --file out/.config -d CONFIG_MODULE_SIG
           
           # Stock compatibility
           sed -i 's/SUBLEVEL = .*/SUBLEVEL = 274/' out/Makefile
@@ -73,6 +70,7 @@ jobs:
             AR=llvm-ar \
             NM=llvm-nm \
             OBJCOPY=llvm-objcopy \
+            STRIP=llvm-strip \
             Image.gz-dtb dtbs
 
       - name: Package
@@ -81,7 +79,7 @@ jobs:
           cp out/arch/arm64/boot/Image.gz-dtb Moto-G45-Kernel/
           find out/arch/arm64/boot/dts -name "*.dtb" -o -name "*.dtbo" | head -10 | xargs -I {} cp {} Moto-G45-Kernel/
           ls -lh Moto-G45-Kernel/
-          echo "✅ Build complete!"
+          echo "✅ READY TO FLASH!"
 
       - name: Upload
         uses: actions/upload-artifact@v4
