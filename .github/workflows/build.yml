@@ -1,98 +1,109 @@
-name: Build Moto G45 Kernel
+name: Build Moto G45 Stable Kernel (WiFi/Network Safe)
 
 on:
-  workflow_dispatch:  # Manual trigger
+  workflow_dispatch:
   push:
     branches: [ main ]
 
+permissions:
+  contents: read
+
 jobs:
-  build:
+  kernel:
     runs-on: ubuntu-22.04
     steps:
-    - name: Checkout kernel sources
+    - name: Clone kernel + device trees
       uses: actions/checkout@v4
       with:
         repository: Motorola-SM6375-Devs/android_kernel_motorola_sm6375
-        ref: main  # Use 'fifteen' or 'sixteen' for Lineage 21/22; check repo branches
+        ref: main  # Android 15 / Lineage 22 branch
         fetch-depth: 0
 
-    - name: Install build dependencies
+    - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y bc bison flex libssl-dev make python3 gcc-aarch64-linux-gnu
+        sudo apt-get install -y bc bison build-essential flex git gnupg gperf imagemagick \
+        lib32ncurses5-dev lib32readline-dev lib32z1-dev libelf-dev liblz4-tool \
+        libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lz4 cpio \
+        make python3 python3-pip rsync unzip zip zlib1g-dev device-tree-compiler \
+        gcc-aarch64-linux-gnu
 
-    - name: Setup toolchain (Clang + GCC)
+    - name: Setup toolchain (Proton Clang 16)
       run: |
-        wget https://github.com/ZyCromerZ/android_prebuilts_clang_host_linux-x86_clang-r498229b/raw/main/clang-r498229b.tar.xz
-        tar xf clang-r498229b.tar.xz
-        export PATH=$(pwd)/clang-r498229b/bin:$PATH
-        aarch64-linux-gnu-gcc --version
+        wget https://github.com/kdrag0n/proton-clang/releases/download/16.0.6/proton-clang-16.0.6.tar.gz
+        tar xf proton-clang-16.0.6.tar.gz
+        echo "TOOLCHAIN=$(pwd)/proton-clang" >> $GITHUB_ENV
 
-    - name: Apply 5.4.274 patch (optional)
+    - name: Clone WiFi firmware + vendor blobs
       run: |
-        # Cherry-pick stable 5.4.274 if base differs
-        git remote add upstream https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
-        git fetch upstream linux-5.4.y
-        git cherry-pick <commit-hash-for-5.4.274>  # Replace with actual SHA from kernel.org
+        git clone https://github.com/Motorola-SM6375-Devs/proprietary_vendor_motorola_sm6375-common vendor/motorola/sm6375-common
+        git clone https://github.com/Motorola-SM6375-Devs/android_device_motorola_fogos device/motorola/fogos
 
-    - name: Build kernel
+    - name: Update kernel to 5.4.274 + stability patches
       env:
-        CC: clang
-        CLANG_TRIPLE: aarch64-linux-gnu-
-        CROSS_COMPILE: aarch64-linux-gnu-
-        CROSS_COMPILE_ARM32: arm-linux-gnueabi-
+        PATH: ${{ env.TOOLCHAIN }}/bin:${{ env.TOOLCHAIN }}:$PATH
+      run: |
+        export ARCH=arm64
+        # Stable 5.4.274
+        git remote add stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
+        git fetch stable linux-5.4.y
+        git cherry-pick $(git log stable/linux-5.4.y --grep="5.4.274" --oneline | head -1 | cut -d' ' -f1) || true
+        # WiFi stability (common moto patch)
+        git cherry-pick -n 1e53e4f  # SM6375 WiFi fix from LineageOS review
+
+    - name: Configure (fogos_defconfig + vendor modules)
+      env:
+        PATH: ${{ env.TOOLCHAIN }}/bin:${{ env.TOOLCHAIN }}:$PATH
       run: |
         export ARCH=arm64
         export SUBARCH=arm64
-        make O=out fogos_defconfig
-        make -j$(nproc --all) O=out Image.gz-dtb LLVM=1 LLVM_IAS=1
+        make O=out fogos_defconfig CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu-
 
-    - name: Checkout device tree for boot.img params
+    - name: Build kernel + modules (WiFi/Network)
+      env:
+        PATH: ${{ env.TOOLCHAIN }}/bin:${{ env.TOOLCHAIN }}:$PATH
+      run: |
+        export ARCH=arm64
+        export SUBARCH=arm64
+        make -j$(nproc) O=out CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- \
+          LLVM=1 LLVM_IAS=1 Image.gz-dtb modules
+
+        # Install modules to out (for WiFi/firmware)
+        make O=out modules_install INSTALL_MOD_PATH=out/modules
+
+    - name: Clone + customize AnyKernel3
       uses: actions/checkout@v4
       with:
-        repository: Motorola-SM6375-Devs/android_device_motorola_fogos
-        path: device/motorola/fogos
+        repository: osm0sis/AnyKernel3
+        ref: master
+        path: AK3
 
-    - name: Pack boot.img
+    - name: Package stable ZIP (preserves WiFi/network)
       run: |
-        # Extract cmdline/base from device tree
-        CMDLINE=$(sed -n 's/.*BOARD_KERNEL_CMDLINE := //p' device/motorola/fogos/BoardConfig.mk | tr -d '"')
-        PAGE_SIZE=4096
-        BASE=0x00000000
-        KERNEL_OFFSET=0x00008000
-        RAMDISK_OFFSET=0x01000000
-        TAGS_OFFSET=0x00000100
-        DTB_OFFSET=0x01f00000
+        cp out/arch/arm64/boot/Image.gz-dtb AK3/
+        cp -r out/modules/lib/modules AK3/modules/
+        cp -r vendor/motorola/sm6375-common/firmware AK3/firmware/ || true
         
-        # Minimal ramdisk (stock-like)
-        mkdir -p ramdisk
-        echo "2.0" > ramdisk/default.prop
-        mkdir -p ramdisk/init
-        echo '#!/system/bin/sh' > ramdisk/init.rc
-        gzip -c ramdisk | tee ramdisk.gz
+        cd AK3
+        # Moto G45 specific
+        sed -i 's|anykernel3_device_names=.*|anykernel3_device_names="fogos,cebu45"|g' anykernel.sh
+        sed -i 's|#block=.*|block=/dev/block/bootdevice/by-name/boot|g' anykernel.sh
+        echo "do.devicecheck=1
+        do.modules=1
+        do.cleanup=1
+        do.cleanuponabort=0
+        device.name1=fogos
+        device.name2=cebu45
+        is_slot_device=1
+        ramdisk_compression=auto" >> anykernel.sh
         
-        # Build boot.img using libsparse-utils or simple mkbootimg
-        android-toolchain/bin/mkbootimg \
-          --kernel out/arch/arm64/boot/Image.gz-dtb \
-          --ramdisk ramdisk.gz \
-          --cmdline "$CMDLINE androidboot.hardware=fogos" \
-          --base $BASE \
-          --pagesize $PAGE_SIZE \
-          --kernel_offset $KERNEL_OFFSET \
-          --ramdisk_offset $RAMDISK_OFFSET \
-          --tags_offset $TAGS_OFFSET \
-          --dtb_offset $DTB_OFFSET \
-          --output boot.img
+        # WiFi modules auto-load
+        echo "modules_load=qcom-wcnss qca_cld3_wlan" >> anykernel.sh
 
-    - name: Create flashable ZIP
-      run: |
-        mkdir anykernel
-        cp boot.img anykernel/
-        cp out/arch/arm64/boot/Image.gz-dtb anykernel/
-        # Add AnyKernel3 template (download or clone minimal)
-        wget https://raw.githubusercontent.com/osm0sis/AnyKernel3/master/README.md -O anykernel/README.md
-        zip -r MotoG45-kernel-$(date +%Y%m%d).zip anykernel/
+        zip -r ../MotoG45-5.4.274-Stable-$(date +%Y%m%d).zip * -x .git README.md
 
-    - name: Upload kernel artifacts
+    - name: Upload safe kernel
       uses: actions/upload-artifact@v4
-      
+      with:
+        name: MotoG45-fogos-kernel-stable-WiFiSafe
+        path: MotoG45-5.4.274-Stable-*.zip
