@@ -1,4 +1,4 @@
-name: Moto G45 KernelSU + SUSFS4KSU 5.4.274 (WiFi Fixed)
+name: Moto G45 KernelSU + SUSFS4KSU 5.4.274 (Fixed)
 
 on:
   workflow_dispatch:
@@ -8,11 +8,11 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout kernel
+      - name: Checkout kernel (FIXED branch)
         uses: actions/checkout@v4
         with:
           repository: Motorola-SM6375-Devs/android_kernel_motorola_sm6375
-          ref: main
+          ref: sixteen  # Correct Android 15 branch for G45
 
       - name: Install deps
         run: |
@@ -30,83 +30,53 @@ jobs:
           git fetch stable linux-5.4.y
           git cherry-pick $(git log stable/linux-5.4.y --grep="5.4.274" --oneline | head -1 | cut -d' ' -f1) || true
 
-      - name: KernelSU integration
+      - name: KernelSU
         run: |
           curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
           sed -i 's/CONFIG_KSU=n/CONFIG_KSU=y/g' .config || echo "CONFIG_KSU=y" >> .config
 
-      - name: SUSFS4KSU latest (for KernelSU 5.4 kernels)
+      - name: SUSFS4KSU latest
         run: |
-          # SUSFS4KSU v2.1+ (Moto G45 compatible)
           git clone https://github.com/1q23/SUSFS4KSU susfs4ksu --depth=1
-          
-          # Copy SUSFS4KSU files
           cp susfs4ksu/susfs.c security/selinux/
           cp susfs4ksu/Makefile security/selinux/Makefile.susfs4ksu
-          cp susfs4ksu/Kconfig security/selinux/Kconfig.susfs4ksu
           
-          # Integrate into SELinux
           echo "obj-\$(CONFIG_SUSFS4KSU) += susfs.o" >> security/selinux/Makefile
-          
-          # SUSFS4KSU config
-          cat >> security/selinux/Kconfig << 'EOF'
+          echo "
           config SUSFS4KSU
-          bool "SUSFS4KSU (KernelSU SELinux Hide)"
+          bool 'SUSFS4KSU for KernelSU'
           depends on KERNELSU
           default y
-          help
-            Latest SUSFS4KSU for KernelSU - hides Zygisk/Shamiko
-          EOF
+          " >> security/selinux/Kconfig
           
           echo "CONFIG_SUSFS4KSU=y" >> .config
 
-      - name: G45 defconfig + network fixes
+      - name: Fogos defconfig + WiFi fixes
         run: |
           export ARCH=arm64
           make O=out fogos_defconfig CC=./proton-clang/bin/clang CLANG_TRIPLE=aarch64-linux-gnu-
-          
-          scripts/config --file out/.config -e QCOM_WCNSS_MEM_PRE_ALLOC
-          scripts/config --file out/.config -e WLAN
-          scripts/config --file out/.config -e CFG_QSEE_DB
+          scripts/config --file out/.config -e QCOM_WCNSS_MEM_PRE_ALLOC -e WLAN
 
-      - name: Build KernelSU + SUSFS4KSU
+      - name: Build
         run: |
           export ARCH=arm64
           export CC=./proton-clang/bin/clang
           export CLANG_TRIPLE=aarch64-linux-gnu-
           export CROSS_COMPILE=aarch64-linux-gnu-
-          make -j$(nproc) O=out CC=$CC CLANG_TRIPLE=$CLANG_TRIPLE CROSS_COMPILE=$CROSS_COMPILE \
-            LLVM=1 LLVM_IAS=1 Image.gz-dtb modules
+          make -j$(nproc) O=out CC=$CC CLANG_TRIPLE=$CLANG_TRIPLE CROSS_COMPILE=$CROSS_COMPILE LLVM=1 Image.gz-dtb
 
-      - name: WiFi modules install
-        run: |
-          export ARCH=arm64
-          make O=out modules_install INSTALL_MOD_PATH=out/modules M=drivers/net/wireless
-
-      - name: G45 boot.img (SUSFS4KSU optimized)
+      - name: G45 boot.img
         run: |
           mkdir -p ramdisk/init
-          echo "ro.secure=0
-          ro.ksuid=0 ro.ksu=1
-          androidboot.hardware=qcom androidboot.usbcontroller=a600000.dwc3
-          androidboot.wificountrycode=IN androidboot.selinux=permissive
-          skip_initramfs" > ramdisk/cmdline
+          echo "ro.secure=0 ro.ksu=1 androidboot.hardware=qcom androidboot.usbcontroller=a600000.dwc3 androidboot.wificountrycode=IN androidboot.selinux=permissive skip_initramfs" > ramdisk/cmdline
           
-          echo "# G45 + SUSFS4KSU" > ramdisk/init.rc
+          echo "# G45 SUSFS4KSU" > ramdisk/init.rc
           find ramdisk | cpio -H newc -o | gzip > ramdisk.gz
 
-          ./proton-clang/bin/mkbootimg \
-            --kernel out/arch/arm64/boot/Image.gz-dtb \
-            --ramdisk ramdisk.gz \
-            --cmdline "$(cat ramdisk/cmdline)" \
-            --base 0x00000000 --pagesize 4096 \
-            --kernel_offset 0x00008000 \
-            --ramdisk_offset 0x01800000 \
-            --tags_offset 0x00000100 \
-            --output boot-KernelSU-SUSFS4KSU.img
+          ./proton-clang/bin/mkbootimg --kernel out/arch/arm64/boot/Image.gz-dtb --ramdisk ramdisk.gz --cmdline "$(cat ramdisk/cmdline)" --base 0x00000000 --pagesize 4096 --kernel_offset 0x00008000 --ramdisk_offset 0x01800000 --tags_offset 0x00000100 --output boot-KernelSU-SUSFS4KSU.img
 
-      - name: Upload final boot
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: MotoG45-5.4.274-KernelSU-SUSFS4KSU
+          name: MotoG45-5.4.274-KernelSU-SUSFS4KSU-FIXED
           path: boot-KernelSU-SUSFS4KSU.img
