@@ -1,72 +1,37 @@
-name: Build Moto G45 (fogos) Stock-ROM Kernel
-
-on:
-  workflow_dispatch:
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Kernel Source
-        uses: actions/checkout@v4
-        with:
-          repository: LineageOS/android_kernel_motorola_sm6375
-          ref: lineage-22.2
-          fetch-depth: 1
-
-      - name: Install Build Tools
-          # Added 'python3' and 'libssl-dev' which are often needed for DTB signing
-        run: |
-          sudo apt update
-          sudo apt install -y bc bison build-essential curl flex git kmod libssl-dev libelf-dev gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu pahole llvm lld python3
-
-      - name: Setup Proton Clang
-        run: |
-          git clone https://github.com/kdrag0n/proton-clang.git --depth=1 tools/clang
-
-      - name: Integrate KernelSU & SUSFS
-        run: |
-          curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash -s main
-          git clone https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 --depth=1 susfs_src
-          cp susfs_src/kernel_patches/fs/susfs.c fs/
-          cp susfs_src/kernel_patches/include/linux/susfs.h include/linux/
-          cp susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch KernelSU/
-          cd KernelSU && patch -p1 < 10_enable_susfs_for_ksu.patch && cd ..
-          patch -p1 < susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch || true
-
-      - name: Configure Fogos (Fixed for Moto DT)
+- name: Configure Fogos (Final Fix)
         run: |
           export ARCH=arm64
           mkdir -p out
           
-          # Step 1: Identify Configs
+          # 1. Identify and Merge Configs
           BASE_CONF=$(find arch/arm64/configs/vendor/ -name "holi-qgki_defconfig" -o -name "holi_defconfig" | head -n 1)
           FOGOS_FRAG=$(find arch/arm64/configs/vendor/ -name "moto-holi-fogo.config" -o -name "*fogos*" | head -n 1)
-          
-          # Step 2: Merge
           cat "$BASE_CONF" > arch/arm64/configs/stock_defconfig
           if [ -f "$FOGOS_FRAG" ]; then
             cat "$FOGOS_FRAG" >> arch/arm64/configs/stock_defconfig
           fi
 
-          # Step 3: Apply Config
+          # 2. Base Configuration
           make O=out ARCH=arm64 stock_defconfig
           
-          # STEP 4: MOTO DT FIX - This stops the "Moto DT w/o overlay" error
+          # 3. Explicitly set options to avoid interactive prompts
+          # Fix the Moto DT error
           ./scripts/config --file out/.config -e CONFIG_BUILD_ARM64_DT_OVERLAY
-          
-          # WIFI & KSU SETUP
-          sed -i "s/^SUBLEVEL = .*/SUBLEVEL = 274/" Makefile
+          # Force LTO to None (saves time and avoids the prompt you saw)
+          ./scripts/config --file out/.config -e CONFIG_LTO_NONE
+          ./scripts/config --file out/.config -d CONFIG_LTO_CLANG
+          # Setup KernelSU & SUSFS
           ./scripts/config --file out/.config -e CONFIG_KERNELSU
           ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS
           ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS_HAS_MAGIC_MOUNT
           
-          # DISABLING SIGNING FOR STOCK COMPATIBILITY
+          # 4. Wifi/Module Compatibility
+          sed -i "s/^SUBLEVEL = .*/SUBLEVEL = 274/" Makefile
           ./scripts/config --file out/.config -d CONFIG_MODVERSIONS
           ./scripts/config --file out/.config -d CONFIG_MODULE_SIG
           ./scripts/config --file out/.config -d CONFIG_MODULE_SIG_ALL
           
-          # Finalize config without asking for manual input
+          # 5. Finalize without asking questions
           make O=out ARCH=arm64 olddefconfig
 
       - name: Build Kernel
@@ -74,7 +39,7 @@ jobs:
           export ARCH=arm64
           CLANG_BIN=$PWD/tools/clang/bin
           
-          # We add 'dtbs' to the build command to satisfy Motorola's Makefile requirements
+          # Building Image and DTBs simultaneously
           make -j$(nproc) O=out \
             ARCH=arm64 \
             CC=$CLANG_BIN/clang \
@@ -84,11 +49,3 @@ jobs:
             HOSTCC=gcc \
             LD=ld.lld \
             Image dtbs
-            
-      - name: Upload Stock Image
-        uses: actions/upload-artifact@v4
-        with:
-          name: Image-G45-Fogos-Stock
-          path: |
-            out/arch/arm64/boot/Image
-            out/arch/arm64/boot/dts/vendor/qcom/*.dtb
