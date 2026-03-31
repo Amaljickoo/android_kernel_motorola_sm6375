@@ -1,4 +1,4 @@
-name: Build Moto G45 Stock Kernel - BULLETPROOF
+name: Build Moto G45 KernelSU NON-GKI
 
 on:
   workflow_dispatch:
@@ -7,95 +7,82 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Kernel Source
+      - name: Checkout Source
         uses: actions/checkout@v4
         with:
           repository: LineageOS/android_kernel_motorola_sm6375
           ref: lineage-22.2
-          fetch-depth: 1
 
-      - name: Install Build Dependencies
+      - name: Install Dependencies
         run: |
-          sudo apt update
-          sudo apt install -y bc bison build-essential ccache curl flex git gnupg kmod libncurses5-dev \
-            libssl-dev libelf-dev python3 python3-pip rsync unzip zip aria2 device-tree-compiler \
-            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu pahole xmlstarlet wget
+          sudo apt update && sudo apt install -y \
+          bc bison build-essential flex git libncurses5-dev \
+          libssl-dev libelf-dev python3 gcc-aarch64-linux-gnu \
+          binutils-aarch64-linux-gnu pahole wget device-tree-compiler
 
-      - name: Setup Proton Clang (VERIFIED WORKING)
+      - name: Download Proton Clang
         run: |
-          # WORKING Proton Clang - Tested 2024
-          cd tools
-          wget https://github.com/kdrag0n/proton-clang/releases/download/clang-r416183b/proton-clang.tar.gz
-          tar -xzf proton-clang.tar.gz
-          mv proton-clang clang
-          cd ..
-          
-          # Verify installation
-          tools/clang/bin/clang --version | head -1
-          tools/clang/bin/ld.lld --version | head -1
-          echo "✅ Clang READY!"
+          mkdir -p tools/clang
+          cd tools/clang
+          wget https://github.com/ZyCromerZ/Clang/releases/download/17.0.6/clang-17.0.6.tar.xz
+          tar -xf clang-17.0.6.tar.xz
+          cd ../..
 
-      - name: Setup KernelSU
+      - name: KernelSU
         run: |
-          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s main
-          echo "✅ KernelSU installed"
+          curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash -
 
-      - name: Add SUSFS Support
+      - name: SUSFS
         run: |
-          git clone https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 --depth=1 susfs_src
-          cp susfs_src/kernel_patches/fs/susfs.c fs/ || true
-          cp susfs_src/kernel_patches/include/linux/susfs.h include/linux/ || true
-          cd KernelSU && patch -p1 < ../susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch && cd .. || true
-          patch -p1 < susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch || true
-          echo "✅ SUSFS ready"
+          git clone https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 susfs --depth=1
+          cp susfs/kernel_patches/fs/susfs.c fs/
+          cp susfs/kernel_patches/include/linux/susfs.h include/linux/
+          cd KernelSU && patch -p1 < ../susfs/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch
+          cd .. && patch -p1 < susfs/kernel_patches/50_add_susfs_in_kernel-5.4.patch || true
 
-      - name: Configure Kernel
+      - name: Configure
         run: |
           export ARCH=arm64
-          mkdir -p out
+          mkdir out
           
-          # Find Moto G45 config
-          DEFCONFIG=$(find arch/arm64/configs/ -name "*holi*" -name "*defconfig" | head -n1 || find arch/arm64/configs/vendor/ -name "*holi*" -name "*defconfig" | head -n1)
-          echo "Config: $DEFCONFIG"
-          cp "$DEFCONFIG" arch/arm64/configs/stock_defconfig
+          # Moto G45 config
+          cp arch/arm64/configs/vendor/holi_defconfig arch/arm64/configs/stock_defconfig
           
-          make O=out ARCH=arm64 stock_defconfig
+          make O=out stock_defconfig
           
-          # Essential fixes
+          # Fixes
           scripts/config --file out/.config -e CONFIG_BUILD_ARM64_DT_OVERLAY
           scripts/config --file out/.config -e CONFIG_LTO_NONE
-          scripts/config --file out/.config -d CONFIG_LTO_CLANG
           scripts/config --file out/.config -e CONFIG_KERNELSU
           
-          # Stock compatibility
-          sed -i "s/^SUBLEVEL = .*/SUBLEVEL = 274/" Makefile
+          # Stock ROM
+          sed -i 's/SUBLEVEL = .*/SUBLEVEL = 274/' Makefile
           scripts/config --file out/.config -d CONFIG_MODVERSIONS
           scripts/config --file out/.config -d CONFIG_MODULE_SIG
           
-          make O=out ARCH=arm64 olddefconfig
-          echo "✅ Config complete"
+          make O=out olddefconfig
 
-      - name: Build Kernel
+      - name: Build
         run: |
           export ARCH=arm64
-          CLANG_BIN="$PWD/tools/clang/bin"
+          CLANG=tools/clang/bin
           
-          make -j$(nproc) O=out CC="$CLANG_BIN/clang" CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            HOSTCC="$CLANG_BIN/clang" HOSTLD="$CLANG_BIN/ld.lld" LD="$CLANG_BIN/ld.lld" \
-            AR="$CLANG_BIN/llvm-ar" NM="$CLANG_BIN/llvm-nm" OBJCOPY="$CLANG_BIN/llvm-objcopy" \
-            Image.gz-dtb dtbs
+          make -j$(nproc) O=out \
+            CC=$CLANG/clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            HOSTCC=clang \
+            LD=$CLANG/ld.lld \
+            Image.gz-dtb
 
-      - name: Package Artifacts
+      - name: Package
         run: |
-          mkdir kernel_package
-          cp out/arch/arm64/boot/Image.gz-dtb kernel_package/
-          find out/arch/arm64/boot/dts/ -name "*.dtb" -o -name "*.dtbo" | xargs -I {} cp {} kernel_package/
-          ls -lh kernel_package/
+          mkdir kernel
+          cp out/arch/arm64/boot/Image.gz-dtb kernel/
+          cp -r out/arch/arm64/boot/dts/vendor/qcom/*.dtb kernel/ 2>/dev/null || true
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Moto-G45-KernelSU-5.4.274
-          path: kernel_package/
-          retention-days: 30
+          name: Moto-G45-KernelSU
+          path: kernel/
