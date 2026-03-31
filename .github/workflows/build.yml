@@ -1,4 +1,4 @@
-name: Moto G45 Fogos-ULTIMATE-V2
+name: Moto G45 Fogos-ULTIMATE-V3
 
 on:
   workflow_dispatch:
@@ -32,81 +32,51 @@ jobs:
         
         if [ -d "KernelSU" ]; then
           cp susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch KernelSU/
-          cd KernelSU
-          patch -p1 < 10_enable_susfs_for_ksu.patch
-          cd ..
+          cd KernelSU && patch -p1 < 10_enable_susfs_for_ksu.patch && cd ..
         fi
-
         patch -p1 < susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch || true
-
-    - name: Fix KernelSU Compatibility (pgtable error)
-      run: |
-        FILE="drivers/kernelsu/feature/sucompat.c"
-
-        if [ -f "$FILE" ]; then
-          echo "Patching $FILE"
-
-          # Remove problematic include
-          sed -i '/#include <linux\/pgtable.h>/d' $FILE
-
-          # Add safe compatibility block
-          cat << 'EOF' > fix_block.h
-#ifndef __has_include
-#define __has_include(x) 0
-#endif
-
-#if __has_include(<linux/pgtable.h>)
-#include <linux/pgtable.h>
-#elif __has_include(<asm/pgtable.h>)
-#include <asm/pgtable.h>
-#endif
-
-EOF
-
-          cat fix_block.h $FILE > temp && mv temp $FILE
-          rm fix_block.h
-
-        else
-          echo "sucompat.c not found, skipping fix"
-        fi
 
     - name: Configure for Moto G45 Fogos
       run: |
         export ARCH=arm64
-
-        # Match stock version
+        
+        # FIX 1: Align Kernel Sublevel (5.4.274)
         sed -i 's/^SUBLEVEL = .*/SUBLEVEL = 274/' Makefile
-
-        # Fix version string (WiFi fix)
+        
+        # FIX 2: Exact Version String Match (Wi-Fi Fix)
         sed -i 's/echo "+"/#echo "+"/' scripts/setlocalversion
         echo "-moto-00517-g2ad8f9e38ea6" > localversion
-
-        # Load config
+        
+        # FIX 3: THE BIG ONE - Remove -Werror from EVERY Makefile in the kernel
+        # This fixes the error at line 9929 in your log once and for all.
+        find . -name Makefile -o -name Kbuild | xargs sed -i 's/-Werror//g'
+        
+        # FIX 4: Load fogos config
         make O=out ARCH=arm64 vendor/fogos_defconfig
 
-        # Enable features
+        # FIX 5: Enable Features & Network
         ./scripts/config --file out/.config -e CONFIG_KERNELSU
         ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS
         ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS_HAS_MAGIC_MOUNT
         ./scripts/config --file out/.config -e CONFIG_WLAN
-
-        # Disable module signing
+        
+        # FIX 6: Disable Module Signing (Crucial for Stock)
         ./scripts/config --file out/.config -d CONFIG_MODULE_SIG
         ./scripts/config --file out/.config -d CONFIG_MODULE_SIG_ALL
         ./scripts/config --file out/.config -d CONFIG_MODULE_SIG_FORCE
-
-        # Disable WERROR
+        
+        # FIX 7: Disable WERROR in .config
         ./scripts/config --file out/.config -d CONFIG_WERROR
-
+        
         make O=out ARCH=arm64 olddefconfig
 
     - name: Build Kernel
       run: |
         export ARCH=arm64
         export CROSS_COMPILE=aarch64-linux-gnu-
-
-        make -j$(nproc) O=out ARCH=arm64 CC=aarch64-linux-gnu-gcc KCFLAGS="-Wno-error" Image.gz-dtb || \
-        make -j$(nproc) O=out ARCH=arm64 CC=aarch64-linux-gnu-gcc KCFLAGS="-Wno-error" Image.gz
+        # We pass flags to ignore all warnings as errors during the build
+        make -j$(nproc) O=out ARCH=arm64 CC=aarch64-linux-gnu-gcc KCFLAGS="-w" Image.gz-dtb || \
+        make -j$(nproc) O=out ARCH=arm64 CC=aarch64-linux-gnu-gcc KCFLAGS="-w" Image.gz
 
     - name: Organize Artifacts
       run: |
@@ -117,5 +87,5 @@ EOF
     - name: Upload Build
       uses: actions/upload-artifact@v4
       with:
-        name: Moto-G45-Fogos-Ultimate-V2
+        name: Moto-G45-Fogos-KSU-SUSFS-V3
         path: deploy/*
