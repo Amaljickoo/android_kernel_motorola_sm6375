@@ -5,9 +5,6 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    env:
-      ARCH: arm64
-      CROSS_COMPILE: aarch64-linux-gnu-
 
     steps:
     - name: Checkout kernel
@@ -19,56 +16,34 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev gcc-aarch64-linux-gnu device-tree-compiler make cpio wget python3-pip
+        sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev gcc-aarch64-linux-gnu device-tree-compiler make cpio python3-pip
         pip3 install mkbootimg
 
-    - name: Create stock cmdline
-      run: |
-        cat > stock_cmdline << EOF
-        console=ttyMSM0,115200n8 earlycon=msm_geni_serial,0xA90000 androidboot.hardware=qcom androidboot.usbcontroller=a600000.dwc3 androidboot.memcg.enable=1 androidboot.selinux=permissive skip_initramfs
-        EOF
+    - name: Setup stock cmdline
+      run: echo "console=ttyMSM0,115200n8 androidboot.hardware=qcom androidboot.selinux=permissive skip_initramfs" > stock_cmdline
 
-    - name: WiFi tweaks
+    - name: WiFi fixes + SUSFS config
       run: |
-        grep -q '^CONFIG_QCOM_WCNSS_MEM_PRE_ALLOC=' defconfig 2>/dev/null || echo "CONFIG_QCOM_WCNSS_MEM_PRE_ALLOC=y" >> defconfig
-        grep -q '^CONFIG_WLAN=' defconfig 2>/dev/null || echo "CONFIG_WLAN=y" >> defconfig
-        grep -q '^CONFIG_SUSFS=' defconfig 2>/dev/null || echo "CONFIG_SUSFS=m" >> defconfig
+        echo "CONFIG_QCOM_WCNSS_MEM_PRE_ALLOC=y" >> defconfig
+        echo "CONFIG_WLAN=y" >> defconfig
+        echo "CONFIG_SUSFS=m" >> defconfig
 
-    - name: SUSFS module (LINE 42 FIXED)
+    - name: Create SUSFS module (LINE 43 ULTRA-SIMPLE)
       run: |
         mkdir -p security/selinux/hooks
-        cat > security/selinux/hooks/susfs.c << 'SUSFS_EOF'
-#include ux/module.h>
-#include ux/kernel.h>
-static int __init susfs_init(void) {
-    printk(KERN_INFO "SUSFS4KSU: Moto G45 loaded\n");
-    return 0;
-}
-module_init(susfs_init);
-MODULE_LICENSE("GPL");
-SUSFS_EOF
-
-        if [ ! -f security/selinux/Makefile ] || ! grep -q 'hooks/susfs.o' security/selinux/Makefile; then
-          echo "obj-\$(CONFIG_SUSFS) += hooks/susfs.o" >> security/selinux/Makefile
-        fi
-
-        if [ ! -f security/selinux/Kconfig ] || ! grep -q 'config SUSFS' security/selinux/Kconfig; then
-          cat >> security/selinux/Kconfig << 'KCFG_EOF'
-config SUSFS
-    tristate "SUSFS4KSU kernel support"
-    depends on KSU
-    default m
-KCFG_EOF
-        fi
+        echo '#include <linux/module.h>
+static int init(void) { printk("SUSFS4KSU: Moto G45\n"); return 0; }
+module_init(init); MODULE_LICENSE("GPL");' > security/selinux/hooks/susfs.c
+        echo "obj-\$(CONFIG_SUSFS) += hooks/susfs.o" >> security/selinux/Makefile
+        echo "config SUSFS
+tristate 'SUSFS'
+default m" >> security/selinux/Kconfig
 
     - name: Configure kernel
       run: |
         export ARCH=arm64
         export CROSS_COMPILE=aarch64-linux-gnu-
         make O=out defconfig
-        scripts/config --file out/.config -e QCOM_WCNSS_MEM_PRE_ALLOC || true
-        scripts/config --file out/.config -e WLAN || true
-        scripts/config --file out/.config -m SUSFS || true
         make O=out olddefconfig
 
     - name: Build kernel
@@ -77,31 +52,20 @@ KCFG_EOF
         export CROSS_COMPILE=aarch64-linux-gnu-
         make -j$(nproc) O=out CC=aarch64-linux-gnu-gcc Image.gz-dtb
 
-    - name: Test ramdisk
+    - name: Create test ramdisk
       run: |
-        mkdir -p tmp_ram/init
-        echo "# Test ramdisk" > tmp_ram/init/placeholder
-        find tmp_ram | cpio -H newc -o | gzip > ramdisk.gz
-        rm -rf tmp_ram
+        mkdir tmp_ram
+        echo "# test" > tmp_ram/init
+        cd tmp_ram && find . | cpio -H newc -o | gzip > ../ramdisk.gz
+        cd .. && rm -rf tmp_ram
 
-    - name: Build boot image
+    - name: Build boot.img
       run: |
         CMDLINE=$(cat stock_cmdline)
-        mkbootimg \
-          --kernel out/arch/arm64/boot/Image.gz-dtb \
-          --ramdisk ramdisk.gz \
-          --cmdline "$CMDLINE" \
-          --base 0x00000000 \
-          --pagesize 4096 \
-          --kernel_offset 0x00008000 \
-          --ramdisk_offset 0x01800000 \
-          --tags_offset 0x00000100 \
-          --output boot-MotoG45-CONSERVATIVE.img
+        mkbootimg --kernel out/arch/arm64/boot/Image.gz-dtb --ramdisk ramdisk.gz --cmdline "$CMDLINE" --base 0x00000000 --pagesize 4096 --kernel_offset 0x00008000 --ramdisk_offset 0x01800000 --tags_offset 0x00000100 --output boot-MotoG45-FINAL.img
 
     - name: Upload
       uses: actions/upload-artifact@v4
       with:
-        name: MotoG45-Conservative-Build
-        path: |
-          boot-MotoG45-CONSERVATIVE.img
-          out/arch/arm64/boot/Image.gz-dtb
+        name: MotoG45-Conservative
+        path: boot-MotoG45-FINAL.img
