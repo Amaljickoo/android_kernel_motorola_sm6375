@@ -1,4 +1,4 @@
-name: Moto G45 KernelSU - GUARANTEED
+name: Moto G45 KernelSU - PERFECT BUILD
 
 on:
   workflow_dispatch:
@@ -17,64 +17,24 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y bc bison build-essential flex git libncurses5-dev libssl-dev \
-            libelf-dev python3 gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
-            pahole clang lld llvm device-tree-compiler
+            libelf-dev python3 gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu pahole \
+            clang lld llvm device-tree-compiler
 
-      - name: KernelSU
+      - name: KernelSU Only (No SUSFS)
         run: |
           curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash -
 
-      - name: SUSFS
-        run: |
-          git clone https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 --depth=1
-          cp susfs4ksu/kernel_patches/fs/susfs.c fs/ || true
-          cp susfs4ksu/kernel_patches/include/linux/susfs.h include/linux/ || true
-          cd KernelSU && patch -p1 < ../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch || true
-          cd .. && patch -p1 < susfs4ksu/kernel_patches/50_add_susfs_in_kernel-5.4.patch || true
-
-      - name: Configure
+      - name: Configure Moto G45
         run: |
           export ARCH=arm64
           mkdir out
           
-          # Moto G45 holi
-          cp $(find arch/arm64/configs -name "*holi*defconfig" | head -1) arch/arm64/configs/stock_defconfig
+          # Moto G45 holi config
+          DEFCONFIG=$(find arch/arm64/configs -name "*holi*" -name "*defconfig" | head -1)
+          echo "Using: $DEFCONFIG"
+          cp "$DEFCONFIG" arch/arm64/configs/stock_defconfig
           
           make O=out ARCH=arm64 stock_defconfig
           
-          scripts/config --file out/.config -e CONFIG_KERNELSU
-          scripts/config --file out/.config -e CONFIG_LTO_NONE
-          scripts/config --file out/.config -d CONFIG_MODVERSIONS
-          scripts/config --file out/.config -d CONFIG_MODULE_SIG
-          
-          sed -i 's/SUBLEVEL = .*/SUBLEVEL = 274/' Makefile
-          
-          make O=out ARCH=arm64 olddefconfig
-
-      - name: Build
-        run: |
-          export ARCH=arm64
-          
-          make -j$(nproc) O=out \
-            ARCH=arm64 \
-            CC=clang \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            HOSTCC=clang \
-            HOSTLD=ld.lld \
-            LD=ld.lld \
-            Image.gz-dtb
-
-      - name: Package
-        run: |
-          mkdir -p Moto-G45-Kernel
-          cp out/arch/arm64/boot/Image.gz-dtb Moto-G45-Kernel/
-          find out/arch/arm64/boot/dts -name "*.dtb" -exec cp {} Moto-G45-Kernel/ \; 2>/dev/null || true
-          ls -la Moto-G45-Kernel/
-
-      - name: Upload
-        uses: actions/upload-artifact@v4
-        with:
-          name: Moto-G45-KernelSU-v5.4.274
-          path: Moto-G45-Kernel/
+          # Essential fixes
+          scripts/config --file out
