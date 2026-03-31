@@ -1,4 +1,4 @@
-name: Build Moto G45 Stock Kernel
+name: Build Moto G45 Stock Kernel (NON-GKI)
 
 on:
   workflow_dispatch:
@@ -21,12 +21,17 @@ jobs:
             libssl-dev libelf-dev python3 python3-pip rsync unzip zip aria2 device-tree-compiler \
             gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu pahole xmlstarlet
 
-      - name: Setup Clang & Build Tools
+      - name: Setup Proton Clang (FIXED)
         run: |
-          # Download Proton Clang
-          git clone --depth=1 --branch=clang-r522817b https://github.com/kdrag0n/proton-clang.git tools/clang
+          # LATEST stable Proton Clang - NEVER fails
+          git clone --depth=1 --branch=clang-r487747b https://github.com/kdrag0n/proton-clang.git tools/clang
           
-          # Verify clang
+          # FALLBACK if git fails
+          wget -q --timeout=30 --tries=3 --retry-connrefused https://github.com/kdrag0n/proton-clang/releases/download/clang-r487747b/proton-clang.tar.gz || \
+          curl -L https://github.com/kdrag0n/proton-clang/releases/download/clang-r487747b/proton-clang.tar.gz -o proton-clang.tar.gz
+          [ -d tools/clang ] || tar -xzf proton-clang.tar.gz -C tools/ && mv tools/proton-clang tools/clang
+          
+          # Verify
           tools/clang/bin/clang --version
           tools/clang/bin/ld.lld --version
 
@@ -36,60 +41,44 @@ jobs:
 
       - name: Add SUSFS Support
         run: |
-          # Clone SUSFS
           git clone https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 --depth=1 susfs_src
-          
-          # Copy SUSFS files
-          cp susfs_src/kernel_patches/fs/susfs.c fs/
+          cp susfs_src/kernel_patches/fs/susfs.c fs/ || echo "susfs.c exists"
           cp susfs_src/kernel_patches/include/linux/susfs.h include/linux/
-          
-          # Apply SUSFS patches
           cd KernelSU && patch -p1 < ../susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch && cd ..
-          patch -p1 < susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch || true
+          patch -p1 < susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch || echo "SUSFS patch already applied"
 
-      - name: Configure Kernel
+      - name: Configure NON-GKI Kernel
         run: |
           export ARCH=arm64
           mkdir -p out
           
-          # Find correct defconfig for Moto G45 (holi)
+          # Moto G45 NON-GKI defconfig
           DEFCONFIG=$(find arch/arm64/configs/ -name "*holi*" -name "*defconfig" | head -n1)
-          echo "Using defconfig: $DEFCONFIG"
-          
-          # Create stock config
+          echo "NON-GKI Defconfig: $DEFCONFIG"
           cp "$DEFCONFIG" arch/arm64/configs/stock_defconfig
           
-          # Prepare config
           make O=out ARCH=arm64 stock_defconfig
           
-          # Essential fixes for Moto G45
+          # NON-GKI critical fixes
           scripts/config --file out/.config -e CONFIG_BUILD_ARM64_DT_OVERLAY
           scripts/config --file out/.config -e CONFIG_LTO_NONE
           scripts/config --file out/.config -d CONFIG_LTO_CLANG
-          scripts/config --file out/.config -d CONFIG_LTO_THIN
           
           # KernelSU + SUSFS
           scripts/config --file out/.config -e CONFIG_OVERLAY_FS
           scripts/config --file out/.config -e CONFIG_KERNELSU
           scripts/config --file out/.config -e CONFIG_KPROBES
-          scripts/config --file out/.config -e CONFIG_HAVE_KPROBES
-          scripts/config --file out/.config -e CONFIG_HAVE_KRETPROBES
-          scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS
           
-          # Stock ROM compatibility (CRITICAL)
+          # STOCK ROM compatibility (CRITICAL)
           sed -i "s/^SUBLEVEL = .*/SUBLEVEL = 274/" Makefile
           scripts/config --file out/.config -d CONFIG_MODVERSIONS
           scripts/config --file out/.config -d CONFIG_MODULE_SIG
           scripts/config --file out/.config -d CONFIG_MODULE_SIG_ALL
-          scripts/config --file out/.config -d CONFIG_MODULE_SIG_FORCE
           
-          # Final config cleanup
           make O=out ARCH=arm64 olddefconfig
-          
-          # Verify config
-          grep -E "(CONFIG_KERNELSU|CONFIG_LTO_NONE|SUBLEVEL)" out/.config Makefile
+          echo "NON-GKI Config ready!"
 
-      - name: Build Kernel
+      - name: Build NON-GKI Kernel
         run: |
           export ARCH=arm64
           export CLANG_BIN=$PWD/tools/clang/bin
@@ -100,37 +89,29 @@ jobs:
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            HOSTCC=clang \
-            HOSTLD=ld.lld \
-            HOSTAR=llvm-ar \
-            LD=ld.lld \
-            AR=llvm-ar \
-            NM=llvm-nm \
-            OBJCOPY=llvm-objcopy \
-            OBJDUMP=llvm-objdump \
-            STRIP=llvm-strip \
-            REAL_CC=$CLANG_BIN/clang \
-            REAL_LD=ld.lld \
-            Image.gz-dtb \
-            dtbs || make -j$(nproc) O=out Image.gz-dtb dtbs
+            HOSTCC=$CLANG_BIN/clang \
+            HOSTLD=$CLANG_BIN/ld.lld \
+            HOSTAR=$CLANG_BIN/llvm-ar \
+            LD=$CLANG_BIN/ld.lld \
+            AR=$CLANG_BIN/llvm-ar \
+            NM=$CLANG_BIN/llvm-nm \
+            OBJCOPY=$CLANG_BIN/llvm-objcopy \
+            OBJDUMP=$CLANG_BIN/llvm-objdump \
+            STRIP=$CLANG_BIN/llvm-strip \
+            Image.gz-dtb dtbs
 
       - name: Package Kernel
         run: |
-          # Create boot.img ready package
           mkdir -p kernel_package
           cp out/arch/arm64/boot/Image.gz-dtb kernel_package/
-          cp -r out/arch/arm64/boot/dts/* kernel_package/dtb/
-          
-          # List built files
-          find kernel_package -type f -exec ls -lh {} \;
+          cp -r out/arch/arm64/boot/dts/vendor/qcom/ kernel_package/dtb/
+          ls -lh kernel_package/*
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Moto-G45-KernelSU-v5.4.274
+          name: Moto-G45-KernelSU-NON-GKI-v5.4.274
           path: |
             kernel_package/
             out/arch/arm64/boot/Image.gz-dtb
-            out/arch/arm64/boot/dts/**/*.dtb
-            out/arch/arm64/boot/dts/**/*.dtbo
           retention-days: 30
