@@ -1,4 +1,5 @@
-name: Moto G45 KernelSU Conservative Build (5.4.274, Android 15)
+name: Moto G45 Stock-ROM SUSFS + KernelSU (5.4.274)
+
 on:
   workflow_dispatch:
 
@@ -7,65 +8,86 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-    - name: Checkout kernel
+    - name: Checkout Kernel Source
       uses: actions/checkout@v4
       with:
         repository: Motorola-SM6375-Devs/android_kernel_motorola_sm6375
         ref: sixteen
+        fetch-depth: 1
 
-    - name: Install dependencies
+    - name: Install Build Tools
       run: |
         sudo apt-get update
-        sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev gcc-aarch64-linux-gnu device-tree-compiler make cpio python3-pip
-        pip3 install mkbootimg
+        sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev gcc-aarch64-linux-gnu device-tree-compiler make cpio python3
 
-    - name: Setup stock cmdline
-      run: echo "console=ttyMSM0,115200n8 androidboot.hardware=qcom androidboot.selinux=permissive skip_initramfs" > stock_cmdline
-
-    - name: WiFi fixes + SUSFS config
+    - name: Integrate KernelSU
       run: |
-        echo "CONFIG_QCOM_WCNSS_MEM_PRE_ALLOC=y" >> defconfig
-        echo "CONFIG_WLAN=y" >> defconfig
-        echo "CONFIG_SUSFS=m" >> defconfig
+        curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash -s main
 
-    - name: Create SUSFS module (LINE 43 ULTRA-SIMPLE)
+    - name: Integrate SUSFS
       run: |
-        mkdir -p security/selinux/hooks
-        echo '#include <linux/module.h>
-static int init(void) { printk("SUSFS4KSU: Moto G45\n"); return 0; }
-module_init(init); MODULE_LICENSE("GPL");' > security/selinux/hooks/susfs.c
-        echo "obj-\$(CONFIG_SUSFS) += hooks/susfs.o" >> security/selinux/Makefile
-        echo "config SUSFS
-tristate 'SUSFS'
-default m" >> security/selinux/Kconfig
+        # 1. Clone SUSFS sources for Kernel 5.4
+        git clone https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 --depth=1 susfs_src
+        
+        # 2. Copy SUSFS core files to kernel tree
+        cp susfs_src/kernel_patches/fs/susfs.c fs/
+        cp susfs_src/kernel_patches/include/linux/susfs.h include/linux/
+        
+        # 3. Patch KernelSU to support SUSFS (Essential for hiding root)
+        cp susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch KernelSU/
+        cd KernelSU && patch -p1 < 10_enable_susfs_for_ksu.patch && cd ..
+        
+        # 4. Patch the main Kernel for SUSFS support
+        patch -p1 < susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch || true
 
-    - name: Configure kernel
+    - name: Configure for Stock ROM & Network
+      run: |
+        export ARCH=arm64
+        
+        # Force Kernel Sublevel to 274 (Matching your Android 15 build)
+        sed -i 's/^SUBLEVEL = .*/SUBLEVEL = 274/' Makefile
+        
+        # Prevent "-dirty" suffix which kills Stock Wi-Fi drivers
+        sed -i 's/echo "+"/#echo "+"/' scripts/setlocalversion
+        
+        # Find and prepare the Motorola holi defconfig
+        CONF_PATH=$(find arch/arm64/configs/vendor/ -name "*holi-qgki_defconfig*" -o -name "*holi_defconfig*" | head -n 1)
+        CONF_NAME=$(basename $CONF_PATH)
+        echo "CONF_NAME=$CONF_NAME" >> $GITHUB_ENV
+        make O=out ARCH=arm64 $CONF_NAME
+
+        # --- Enable Features via scripts/config ---
+        # KernelSU & SUSFS
+        ./scripts/config --file out/.config -e CONFIG_KERNELSU
+        ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS
+        ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS_HAS_MAGIC_MOUNT
+        
+        # Wi-Fi & Network Stability
+        ./scripts/config --file out/.config -e CONFIG_WLAN
+        ./scripts/config --file out/.config -e CONFIG_QCOM_WCNSS_MEM_PRE_ALLOC
+        
+        # Disable Module Signing (Crucial for Stock ROM Wi-Fi)
+        ./scripts/config --file out/.config -d CONFIG_MODULE_SIG
+        ./scripts/config --file out/.config -d CONFIG_MODULE_SIG_ALL
+        
+        # Finalize
+        make O=out ARCH=arm64 olddefconfig
+
+    - name: Build Kernel
       run: |
         export ARCH=arm64
         export CROSS_COMPILE=aarch64-linux-gnu-
-        make O=out defconfig
-        make O=out olddefconfig
+        make -j$(nproc) O=out ARCH=arm64 CC=aarch64-linux-gnu-gcc Image.gz-dtb || make -j$(nproc) O=out ARCH=arm64 CC=aarch64-linux-gnu-gcc Image.gz
 
-    - name: Build kernel
+    - name: Organize Artifacts
       run: |
-        export ARCH=arm64
-        export CROSS_COMPILE=aarch64-linux-gnu-
-        make -j$(nproc) O=out CC=aarch64-linux-gnu-gcc Image.gz-dtb
+        mkdir -p deploy
+        # We need the Kernel Image and the DTBOs for a full flash
+        find out/arch/arm64/boot/ -name "Image.gz*" -exec cp {} deploy/ \;
+        find out/arch/arm64/boot/dts/vendor/qcom/ -name "*.dtbo" -exec cp {} deploy/ \;
 
-    - name: Create test ramdisk
-      run: |
-        mkdir tmp_ram
-        echo "# test" > tmp_ram/init
-        cd tmp_ram && find . | cpio -H newc -o | gzip > ../ramdisk.gz
-        cd .. && rm -rf tmp_ram
-
-    - name: Build boot.img
-      run: |
-        CMDLINE=$(cat stock_cmdline)
-        mkbootimg --kernel out/arch/arm64/boot/Image.gz-dtb --ramdisk ramdisk.gz --cmdline "$CMDLINE" --base 0x00000000 --pagesize 4096 --kernel_offset 0x00008000 --ramdisk_offset 0x01800000 --tags_offset 0x00000100 --output boot-MotoG45-FINAL.img
-
-    - name: Upload
+    - name: Upload Build
       uses: actions/upload-artifact@v4
       with:
-        name: MotoG45-Conservative
-        path: boot-MotoG45-FINAL.img
+        name: Moto-G45-SUSFS-Final
+        path: deploy/*
