@@ -11,7 +11,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: LineageOS/android_kernel_motorola_sm6375
-          ref: lineage-22.1
+          ref: lineage-21
           fetch-depth: 1
 
       - name: Install Build Tools
@@ -25,17 +25,21 @@ jobs:
 
       - name: Integrate KernelSU & SUSFS
         run: |
-          # 1. Setup KernelSU
+          # Setup KernelSU
           curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash -s main
           
-          # 2. Setup SUSFS
+          # Setup SUSFS
           git clone https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 --depth=1 susfs_src
           cp susfs_src/kernel_patches/fs/susfs.c fs/
           cp susfs_src/kernel_patches/include/linux/susfs.h include/linux/
           
-          # 3. Apply SUSFS Patches
-          cp susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch KernelSU/
-          cd KernelSU && patch -p1 < 10_enable_susfs_for_ksu.patch && cd ..
+          # Patch KernelSU for SUSFS
+          if [ -d "KernelSU" ]; then
+            cp susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch KernelSU/
+            cd KernelSU && patch -p1 < 10_enable_susfs_for_ksu.patch && cd ..
+          fi
+          
+          # Patch Kernel for SUSFS
           patch -p1 < susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch || true
 
       - name: Configure and Fix Moto DT
@@ -43,34 +47,38 @@ jobs:
           export ARCH=arm64
           mkdir -p out
           
-          # Merge configs
-          BASE_CONF=$(find arch/arm64/configs/vendor/ -name "holi-qgki_defconfig" -o -name "holi_defconfig" | head -n 1)
-          FOGOS_FRAG=$(find arch/arm64/configs/vendor/ -name "moto-holi-fogo.config" -o -name "*fogos*" | head -n 1)
-          cat "$BASE_CONF" > arch/arm64/configs/stock_defconfig
-          if [ -f "$FOGOS_FRAG" ]; then
+          # Search for the base config and the moto fragment
+          # This avoids the "cat: ''" error by checking if files exist first
+          BASE_CONF=$(find arch/arm64/configs/ -name "*defconfig" | grep -E "holi|qgki" | head -n 1)
+          FOGOS_FRAG=$(find arch/arm64/configs/ -name "*fogo*" | head -n 1)
+
+          if [ -z "$BASE_CONF" ]; then
+            echo "Error: Could not find a base defconfig!"
+            exit 1
+          fi
+
+          # Start building the combined config
+          cp "$BASE_CONF" arch/arm64/configs/stock_defconfig
+          
+          if [ -n "$FOGOS_FRAG" ]; then
+            echo "Merging fragment: $FOGOS_FRAG"
             cat "$FOGOS_FRAG" >> arch/arm64/configs/stock_defconfig
           fi
 
+          # Apply the config
           make O=out ARCH=arm64 stock_defconfig
           
-          # Fix the "Moto DT w/o overlay" error
+          # Force set required flags to avoid interactive prompts
           ./scripts/config --file out/.config -e CONFIG_BUILD_ARM64_DT_OVERLAY
-          
-          # Force LTO to None to avoid the interactive prompt [1-2?]
           ./scripts/config --file out/.config -e CONFIG_LTO_NONE
           ./scripts/config --file out/.config -d CONFIG_LTO_CLANG
-          
-          # Enable KernelSU & SUSFS in config
           ./scripts/config --file out/.config -e CONFIG_KERNELSU
           ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS
-          ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS_HAS_MAGIC_MOUNT
           
-          # Wi-Fi compatibility
+          # Wi-Fi sublevel fix for Stock ROM
           sed -i "s/^SUBLEVEL = .*/SUBLEVEL = 274/" Makefile
-          ./scripts/config --file out/.config -d CONFIG_MODVERSIONS
-          ./scripts/config --file out/.config -d CONFIG_MODULE_SIG
           
-          # Apply config changes silently
+          # Sync the config
           make O=out ARCH=arm64 olddefconfig
 
       - name: Build Kernel
@@ -80,3 +88,18 @@ jobs:
           make -j$(nproc) O=out \
             ARCH=arm64 \
             CC=$CLANG_BIN/clang \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            HOSTCC=gcc \
+            LD=ld.lld \
+            Image dtbs
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kernel-G45-Fogos
+          path: |
+            out/arch/arm64/boot/Image
+            out/arch/arm64/boot/dts/vendor/qcom/*.dtb
+            out/arch/arm64/boot/dts/vendor/qcom/*.dtbo
