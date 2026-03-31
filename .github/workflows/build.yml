@@ -1,4 +1,4 @@
-name: Moto G45 Stock-ROM SUSFS + KernelSU (5.4.274)
+name: Moto G45 Fogos-Specific SUSFS + KernelSU (5.4.274)
 
 on:
   workflow_dispatch:
@@ -30,49 +30,41 @@ jobs:
         cp susfs_src/kernel_patches/fs/susfs.c fs/
         cp susfs_src/kernel_patches/include/linux/susfs.h include/linux/
         
-        # Patch KernelSU for SUSFS
         if [ -d "KernelSU" ]; then
           cp susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch KernelSU/
           cd KernelSU && patch -p1 < 10_enable_susfs_for_ksu.patch && cd ..
         fi
-        
-        # Patch Kernel for SUSFS
         patch -p1 < susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch || true
 
-    - name: Configure for Stock ROM & Network
+    - name: Configure for Moto G45 Fogos (Stock ROM Fixes)
       run: |
         export ARCH=arm64
         
-        # FIX 1: Force Kernel Sublevel to 274 (Wi-Fi/BT Fix)
+        # FIX 1: Force Kernel Sublevel to 274
         sed -i 's/^SUBLEVEL = .*/SUBLEVEL = 274/' Makefile
         
-        # FIX 2: Prevent "-dirty" suffix (Wi-Fi Driver Match Fix)
+        # FIX 2: Prevent "-dirty" and set EXACT Moto localversion to match your Stock ROM
+        # Your version: 5.4.274-moto-00517-g2ad8f9e38ea6
         sed -i 's/echo "+"/#echo "+"/' scripts/setlocalversion
+        echo "-moto-00517-g2ad8f9e38ea6" > localversion
         
-        # FIX 3: Find the Motorola holi defconfig automatically
-        CONF_PATH=$(find arch/arm64/configs/ -name "*holi*defconfig*" | head -n 1)
-        
-        if [ -z "$CONF_PATH" ]; then
-          echo "ERROR: No holi defconfig found! Listing available configs:"
-          find arch/arm64/configs/ -name "*defconfig*"
-          exit 1
-        fi
-        
-        CONF_NAME=$(basename "$CONF_PATH")
+        # FIX 3: Use the EXACT defconfig found in your logs
+        CONF_NAME="fogos_defconfig"
         echo "Using Config: $CONF_NAME"
         
-        # 4. Generate .config
-        make O=out ARCH=arm64 "$CONF_NAME"
+        # 4. Generate .config (Looking specifically in vendor/ folder)
+        make O=out ARCH=arm64 vendor/$CONF_NAME
 
-        # FIX 4: Enable Root & Security Hiding
+        # FIX 4: Enable Root, SUSFS, and Wi-Fi drivers
         ./scripts/config --file out/.config -e CONFIG_KERNELSU
         ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS
         ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS_HAS_MAGIC_MOUNT
-        
-        # FIX 5: Stock ROM Network Drivers
         ./scripts/config --file out/.config -e CONFIG_WLAN
+        
+        # FIX 5: Disable Signature Checking (Required for Stock Modules to load)
         ./scripts/config --file out/.config -d CONFIG_MODULE_SIG
         ./scripts/config --file out/.config -d CONFIG_MODULE_SIG_ALL
+        ./scripts/config --file out/.config -d CONFIG_MODULE_SIG_FORCE
         
         # Finalize
         make O=out ARCH=arm64 olddefconfig
@@ -81,16 +73,17 @@ jobs:
       run: |
         export ARCH=arm64
         export CROSS_COMPILE=aarch64-linux-gnu-
+        # G45 usually uses Image.gz or Image.gz-dtb
         make -j$(nproc) O=out ARCH=arm64 CC=aarch64-linux-gnu-gcc Image.gz-dtb || make -j$(nproc) O=out ARCH=arm64 CC=aarch64-linux-gnu-gcc Image.gz
 
     - name: Organize Artifacts
       run: |
         mkdir -p deploy
         find out/arch/arm64/boot/ -name "Image.gz*" -exec cp {} deploy/ \;
-        find out/arch/arm64/boot/dts/ -name "*.dtbo" -exec cp {} deploy/ \; || echo "No DTBOs"
+        find out/arch/arm64/boot/dts/vendor/qcom/ -name "*.dtbo" -exec cp {} deploy/ \; || echo "No DTBOs"
 
     - name: Upload Build
       uses: actions/upload-artifact@v4
       with:
-        name: Moto-G45-Final-With-Fixes
+        name: Moto-G45-Fogos-SUSFS-Final
         path: deploy/*
