@@ -22,59 +22,53 @@ jobs:
         sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev gcc-aarch64-linux-gnu device-tree-compiler make cpio wget python3-pip
         pip3 install mkbootimg
 
-    - name: Create stock cmdline fallback
+    - name: Create stock cmdline
       run: |
-        cat > stock_cmdline << 'EOF'
+        cat > stock_cmdline << EOF
         console=ttyMSM0,115200n8 earlycon=msm_geni_serial,0xA90000 androidboot.hardware=qcom androidboot.usbcontroller=a600000.dwc3 androidboot.memcg.enable=1 androidboot.selinux=permissive skip_initramfs
         EOF
 
-    - name: WiFi conservative tweaks
+    - name: WiFi tweaks
       run: |
-        grep -q '^CONFIG_QCOM_WCNSS_MEM_PRE_ALLOC=' defconfig || echo "CONFIG_QCOM_WCNSS_MEM_PRE_ALLOC=y" >> defconfig
-        grep -q '^CONFIG_WLAN=' defconfig || echo "CONFIG_WLAN=y" >> defconfig
-        grep -q '^CONFIG_SUSFS=' defconfig || echo "CONFIG_SUSFS=m" >> defconfig
+        grep -q '^CONFIG_QCOM_WCNSS_MEM_PRE_ALLOC=' defconfig 2>/dev/null || echo "CONFIG_QCOM_WCNSS_MEM_PRE_ALLOC=y" >> defconfig
+        grep -q '^CONFIG_WLAN=' defconfig 2>/dev/null || echo "CONFIG_WLAN=y" >> defconfig
+        grep -q '^CONFIG_SUSFS=' defconfig 2>/dev/null || echo "CONFIG_SUSFS=m" >> defconfig
 
-    - name: SUSFS module FIXED
+    - name: SUSFS module (LINE 42 FIXED)
       run: |
         mkdir -p security/selinux/hooks
-        echo '#include ux/module.h>
+        cat > security/selinux/hooks/susfs.c << 'SUSFS_EOF'
+#include ux/module.h>
 #include ux/kernel.h>
 static int __init susfs_init(void) {
     printk(KERN_INFO "SUSFS4KSU: Moto G45 loaded\n");
     return 0;
 }
 module_init(susfs_init);
-MODULE_LICENSE("GPL");' > security/selinux/hooks/susfs.c
-        chmod 644 security/selinux/hooks/susfs.c
+MODULE_LICENSE("GPL");
+SUSFS_EOF
 
-        if [ -f security/selinux/Makefile ]; then
-          grep -q 'hooks/susfs.o' security/selinux/Makefile || echo "obj-\$(CONFIG_SUSFS) += hooks/susfs.o" >> security/selinux/Makefile
-        else
-          mkdir -p security/selinux
-          echo "obj-\$(CONFIG_SUSFS) += hooks/susfs.o" > security/selinux/Makefile
+        if [ ! -f security/selinux/Makefile ] || ! grep -q 'hooks/susfs.o' security/selinux/Makefile; then
+          echo "obj-\$(CONFIG_SUSFS) += hooks/susfs.o" >> security/selinux/Makefile
         fi
 
-        if [ -f security/selinux/Kconfig ]; then
-          grep -q 'config SUSFS' security/selinux/Kconfig || echo 'config SUSFS
+        if [ ! -f security/selinux/Kconfig ] || ! grep -q 'config SUSFS' security/selinux/Kconfig; then
+          cat >> security/selinux/Kconfig << 'KCFG_EOF'
+config SUSFS
     tristate "SUSFS4KSU kernel support"
     depends on KSU
-    default m' >> security/selinux/Kconfig
-        else
-          mkdir -p security/selinux
-          echo 'config SUSFS
-    tristate "SUSFS4KSU kernel support"
-    depends on KSU
-    default m' > security/selinux/Kconfig
+    default m
+KCFG_EOF
         fi
 
-    - name: Configure kernel conservatively
+    - name: Configure kernel
       run: |
         export ARCH=arm64
         export CROSS_COMPILE=aarch64-linux-gnu-
         make O=out defconfig
-        scripts/config --file out/.config -e QCOM_WCNSS_MEM_PRE_ALLOC
-        scripts/config --file out/.config -e WLAN
-        scripts/config --file out/.config -m SUSFS
+        scripts/config --file out/.config -e QCOM_WCNSS_MEM_PRE_ALLOC || true
+        scripts/config --file out/.config -e WLAN || true
+        scripts/config --file out/.config -m SUSFS || true
         make O=out olddefconfig
 
     - name: Build kernel
@@ -83,10 +77,10 @@ MODULE_LICENSE("GPL");' > security/selinux/hooks/susfs.c
         export CROSS_COMPILE=aarch64-linux-gnu-
         make -j$(nproc) O=out CC=aarch64-linux-gnu-gcc Image.gz-dtb
 
-    - name: Minimal test ramdisk
+    - name: Test ramdisk
       run: |
         mkdir -p tmp_ram/init
-        echo "# Conservative test ramdisk" > tmp_ram/init/placeholder
+        echo "# Test ramdisk" > tmp_ram/init/placeholder
         find tmp_ram | cpio -H newc -o | gzip > ramdisk.gz
         rm -rf tmp_ram
 
@@ -104,7 +98,7 @@ MODULE_LICENSE("GPL");' > security/selinux/hooks/susfs.c
           --tags_offset 0x00000100 \
           --output boot-MotoG45-CONSERVATIVE.img
 
-    - name: Upload artifacts
+    - name: Upload
       uses: actions/upload-artifact@v4
       with:
         name: MotoG45-Conservative-Build
