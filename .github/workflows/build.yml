@@ -1,4 +1,4 @@
-name: Moto G45 KernelSU + SUSFS4KSU 5.4.274 (Fixed)
+name: Moto G45 KernelSU + SUSFS4KSU 5.4.274 (Clang FIXED)
 
 on:
   workflow_dispatch:
@@ -8,21 +8,21 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout kernel (FIXED branch)
+      - name: Checkout kernel
         uses: actions/checkout@v4
         with:
           repository: Motorola-SM6375-Devs/android_kernel_motorola_sm6375
-          ref: sixteen  # Correct Android 15 branch for G45
+          ref: sixteen  # Android 15 G45 branch
 
       - name: Install deps
         run: |
           sudo apt update
           sudo apt install -y bc bison build-essential curl flex git kmod libssl-dev libelf-dev gcc-aarch64-linux-gnu device-tree-compiler
 
-      - name: Proton Clang 16
+      - name: Setup Proton Clang (GIT clone)
         run: |
-          wget https://github.com/kdrag0n/proton-clang/releases/download/16.0.6/proton-clang-16.0.6.tar.gz
-          tar xf proton-clang-16.0.6.tar.gz
+          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git
+          ls proton-clang/bin/clang*
 
       - name: Kernel 5.4.274 + WiFi
         run: |
@@ -38,26 +38,20 @@ jobs:
       - name: SUSFS4KSU latest
         run: |
           git clone https://github.com/1q23/SUSFS4KSU susfs4ksu --depth=1
-          cp susfs4ksu/susfs.c security/selinux/
-          cp susfs4ksu/Makefile security/selinux/Makefile.susfs4ksu
+          cp susfs4ksu/susfs.c security/selinux/ || true
           
           echo "obj-\$(CONFIG_SUSFS4KSU) += susfs.o" >> security/selinux/Makefile
-          echo "
-          config SUSFS4KSU
-          bool 'SUSFS4KSU for KernelSU'
-          depends on KERNELSU
-          default y
-          " >> security/selinux/Kconfig
+          echo "config SUSFS4KSU\nbool 'SUSFS4KSU'\ndefault y\ndepends on KERNELSU" >> security/selinux/Kconfig
           
           echo "CONFIG_SUSFS4KSU=y" >> .config
 
-      - name: Fogos defconfig + WiFi fixes
+      - name: Fogos defconfig + fixes
         run: |
           export ARCH=arm64
           make O=out fogos_defconfig CC=./proton-clang/bin/clang CLANG_TRIPLE=aarch64-linux-gnu-
           scripts/config --file out/.config -e QCOM_WCNSS_MEM_PRE_ALLOC -e WLAN
 
-      - name: Build
+      - name: Build kernel
         run: |
           export ARCH=arm64
           export CC=./proton-clang/bin/clang
@@ -73,10 +67,21 @@ jobs:
           echo "# G45 SUSFS4KSU" > ramdisk/init.rc
           find ramdisk | cpio -H newc -o | gzip > ramdisk.gz
 
-          ./proton-clang/bin/mkbootimg --kernel out/arch/arm64/boot/Image.gz-dtb --ramdisk ramdisk.gz --cmdline "$(cat ramdisk/cmdline)" --base 0x00000000 --pagesize 4096 --kernel_offset 0x00008000 --ramdisk_offset 0x01800000 --tags_offset 0x00000100 --output boot-KernelSU-SUSFS4KSU.img
+          # Use system mkbootimg
+          sudo apt install -y android-sdk-libsparse-utils
+          mkbootimg \
+            --kernel out/arch/arm64/boot/Image.gz-dtb \
+            --ramdisk ramdisk.gz \
+            --cmdline "$(cat ramdisk/cmdline)" \
+            --base 0x00000000 \
+            --pagesize 4096 \
+            --kernel_offset 0x00008000 \
+            --ramdisk_offset 0x01800000 \
+            --tags_offset 0x00000100 \
+            --output boot-KernelSU-SUSFS4KSU.img
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: MotoG45-5.4.274-KernelSU-SUSFS4KSU-FIXED
+          name: MotoG45-5.4.274-KernelSU-SUSFS4KSU
           path: boot-KernelSU-SUSFS4KSU.img
