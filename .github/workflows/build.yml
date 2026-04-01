@@ -1,4 +1,4 @@
-name: Moto G45 Fogos-ULTIMATE-V6
+name: Moto G45 Fogos-ULTIMATE-V7
 
 on:
   workflow_dispatch:
@@ -20,30 +20,44 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev gcc-aarch64-linux-gnu device-tree-compiler make cpio python3 lz4
 
-    - name: Integrate KernelSU & SUSFS
+    - name: Integrate KernelSU
       run: |
         echo "Integrating KernelSU..."
+        # This script clones KernelSU into drivers/kernelsu
         curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash -s main
         
+        # Critical Check: If the folder doesn't exist, the build WILL fail with Error 2
+        if [ ! -d "drivers/kernelsu" ]; then
+          echo "KernelSU directory missing! Cloning manually..."
+          git clone https://github.com/tiann/KernelSU drivers/kernelsu
+        fi
+
+    - name: Integrate SUSFS
+      run: |
         echo "Integrating SUSFS..."
         git clone https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 --depth=1 susfs_src
+        
         cp susfs_src/kernel_patches/fs/susfs.c fs/ || true
         cp susfs_src/kernel_patches/include/linux/susfs.h include/linux/ || true
         
-        if [ -d "KernelSU" ]; then
-          patch -p1 < susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch || true
+        # Patch KernelSU for SUSFS support
+        if [ -d "drivers/kernelsu" ]; then
+          cd drivers/kernelsu
+          patch -p1 < ../../susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch || true
+          cd ../..
         fi
+        
+        # Patch Kernel for SUSFS support
         patch -p1 < susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch || true
 
-    - name: Prepare Source & Fix Flags
+    - name: Fix Source Flags
       run: |
-        # 1. Versioning
+        # Fix versioning to match your requested localversion
         sed -i 's/^SUBLEVEL = .*/SUBLEVEL = 274/' Makefile
         sed -i 's/echo "+"/#echo "+"/' scripts/setlocalversion
         echo "-moto-00517-g2ad8f9e38ea6" > localversion
         
-        # 2. Fix the "linker input file" error by cleaning all Makefiles
-        # This removes malformed assignments that lead to Error 2
+        # Remove strict error checking that causes 'linker input file' errors
         find . -type f -name "Makefile*" -exec sed -i 's/-Werror//g' {} +
         find . -type f -name "Makefile*" -exec sed -i 's/ =strict-prototypes//g' {} +
         find . -type f -name "Makefile*" -exec sed -i 's/ =implicit-function-declaration//g' {} +
@@ -51,11 +65,18 @@ jobs:
     - name: Configure Kernel
       run: |
         export ARCH=arm64
+        # Create output directory
+        mkdir -p out
+        
+        # Load base config
         make O=out ARCH=arm64 vendor/fogos_defconfig
         
-        # Enable KSU, SUSFS and Moto Configs
+        # Enable KSU and SUSFS in .config
         ./scripts/config --file out/.config -e CONFIG_KERNELSU
         ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS
+        ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS_HAS_MAGIC_MOUNT
+        
+        # Moto G45 Fogos configs
         ./scripts/config --file out/.config -e CONFIG_MACH_SM6375
         ./scripts/config --file out/.config -e CONFIG_ARCH_MOTO
         ./scripts/config --file out/.config -d CONFIG_WERROR
@@ -68,7 +89,7 @@ jobs:
         export ARCH=arm64
         export CROSS_COMPILE=aarch64-linux-gnu-
         
-        # We use KCFLAGS to APPEND "no-error" without wiping out the kernel's internal flags
+        # Build command using KCFLAGS to append flags safely
         make -j$(nproc) O=out ARCH=arm64 CC=aarch64-linux-gnu-gcc \
           KCFLAGS="-w -Wno-error" \
           Image.gz-dtb || \
@@ -79,15 +100,22 @@ jobs:
     - name: Create AnyKernel3 Zip
       run: |
         git clone https://github.com/osm0sis/AnyKernel3.git --depth=1
-        [ -f "out/arch/arm64/boot/Image.gz-dtb" ] && cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz-dtb || cp out/arch/arm64/boot/Image.gz AnyKernel3/Image.gz-dtb
+        
+        # Find whichever image was actually produced
+        if [ -f "out/arch/arm64/boot/Image.gz-dtb" ]; then
+          cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz-dtb
+        else
+          cp out/arch/arm64/boot/Image.gz AnyKernel3/Image.gz-dtb
+        fi
         
         cd AnyKernel3
         sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-        sed -i "s/kernel.string=.*/kernel.string=Moto G45 Ultimate V6/g" anykernel.sh
-        zip -r9 ../Moto-G45-Kernel-V6.zip ./* -x "*.git*"
+        sed -i "s/kernel.string=.*/kernel.string=Moto G45 Fogos Ultimate V7/g" anykernel.sh
+        
+        zip -r9 ../Moto-G45-Fogos-V7.zip ./* -x "*.git*"
 
-    - name: Upload Artifacts
+    - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: Moto-G45-Kernel-V6
-        path: Moto-G45-Kernel-V6.zip
+        name: Moto-G45-Fogos-Ultimate
+        path: Moto-G45-Fogos-V7.zip
