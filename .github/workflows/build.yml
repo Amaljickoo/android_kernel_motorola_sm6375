@@ -24,7 +24,7 @@ jobs:
       run: |
         echo "Integrating KernelSU..."
         curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash -s main
-        if [ ! -d "KernelSU" ]; then
+        if [ ! -d "KernelSU" ] && [ ! -d "drivers/kernelsu" ]; then
           echo "ERROR: KernelSU integration failed"
           exit 1
         fi
@@ -63,28 +63,10 @@ jobs:
 
     - name: Fix SUSFS Header and KernelSU seccomp_cache
       run: |
-        # PGTABLE.H COMPATIBILITY FIX FOR KERNEL 5.4 (This fixes 3,000+ errors!)
+        # PGTABLE.H COMPATIBILITY FIX FOR KERNEL 5.4
         find -L KernelSU drivers/kernelsu -type f -name "*.[ch]" -exec sed -i 's/<linux\/pgtable.h>/<asm\/pgtable.h>/g' {} + || true
 
-        # Patch susfs.h to include missing macro definitions directly in the header
-        if [ -f "include/linux/susfs.h" ]; then
-          cat >> include/linux/susfs.h << 'EOF'
-        #ifndef SUSFS_MAX_LEN_PATHNAME
-        #define SUSFS_MAX_LEN_PATHNAME 256
-        #endif
-        #ifndef TASK_STRUCT_NON_ROOT_USER_APP_PROC
-        #define TASK_STRUCT_NON_ROOT_USER_APP_PROC (1UL << 0)
-        #endif
-        #ifndef INODE_STATE_SUS_KSTAT
-        #define INODE_STATE_SUS_KSTAT (1UL << 30)
-        #endif
-        #ifndef SUSFS_MAGIC
-        #define SUSFS_MAGIC 0x53465346
-        #endif
-        EOF
-        fi
-        
-        # Create a minimal susfs_def.h that includes susfs.h and defines the macros
+        # Create a proper susfs_def.h that defines the missing macros
         cat > include/linux/susfs_def.h << 'EOF'
         /* SPDX-License-Identifier: GPL-2.0 */
         #ifndef _LINUX_SUSFS_DEF_H
@@ -108,9 +90,13 @@ jobs:
         #endif /* _LINUX_SUSFS_DEF_H */
         EOF
         
-        # Fix KernelSU seccomp_cache.c
-        if [ -f "KernelSU/infra/seccomp_cache.c" ]; then
-          cat > KernelSU/infra/seccomp_cache.c << 'EOF'
+        # INJECT definitions globally into fs.h so task_mmu.c and other core files don't crash
+        echo "#include <linux/susfs_def.h>" >> include/linux/fs.h
+
+        # Fix KernelSU seccomp_cache.c across ALL clone paths
+        for seccomp_file in "KernelSU/infra/seccomp_cache.c" "drivers/kernelsu/infra/seccomp_cache.c"; do
+          if [ -f "$seccomp_file" ]; then
+            cat > "$seccomp_file" << 'EOF'
         // SPDX-License-Identifier: GPL-2.0
         #include <linux/seccomp.h>
         #include <linux/bitmap.h>
@@ -150,7 +136,8 @@ jobs:
             spin_unlock(&seccomp_cache_lock);
         }
         EOF
-        fi
+          fi
+        done
 
     - name: Configure Kernel
       run: |
@@ -163,7 +150,7 @@ jobs:
         sed -i 's/-dirty//g' scripts/setlocalversion
         echo "-moto-00517-g2ad8f9e38ea6" > localversion
         
-        # CRITICAL COMPILE FIX: This fixes the 3,000+ line `=implicit-int` GCC crashing!
+        # CRITICAL COMPILE FIX: Prevent "=implicit-int" errors
         find . -type f \( -name "Makefile" -o -name "Kbuild" \) -exec sed -i 's/-Werror\b/-Wno-error/g' {} \;
         
         # Load base config
