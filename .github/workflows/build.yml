@@ -1,4 +1,4 @@
-name: Moto G45 Fogos-ULTIMATE-V7
+name: Moto G45 Fogos-ULTIMATE-V5
 
 on:
   workflow_dispatch:
@@ -23,76 +23,138 @@ jobs:
     - name: Integrate KernelSU
       run: |
         echo "Integrating KernelSU..."
-        # This script clones KernelSU into drivers/kernelsu
         curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash -s main
-        
-        # Critical Check: If the folder doesn't exist, the build WILL fail with Error 2
-        if [ ! -d "drivers/kernelsu" ]; then
-          echo "KernelSU directory missing! Cloning manually..."
-          git clone https://github.com/tiann/KernelSU drivers/kernelsu
+        if [ ! -d "KernelSU" ] && [ ! -d "drivers/kernelsu" ]; then
+          echo "ERROR: KernelSU integration failed"
+          exit 1
         fi
+        
+        # PGTABLE.H COMPATIBILITY FIX
+        find -L KernelSU drivers/kernelsu -type f -name "*.[ch]" -exec sed -i 's/<linux\/pgtable.h>/<asm\/pgtable.h>/g' {} + || true
+        
+        # Fix KernelSU compatibility with kernel 5.4
+        echo "Fixing KernelSU compatibility..."
+        
+        # Safely write seccomp_cache.c inside YAML
+        if [ -f "KernelSU/infra/seccomp_cache.c" ]; then
+          cat > KernelSU/infra/seccomp_cache.c << 'EOF'
+        // SPDX-License-Identifier: GPL-2.0
+        #include <linux/seccomp.h>
+        #include <linux/bitmap.h>
+        #include "seccomp_cache.h"
+        
+        #ifndef SECCOMP_ARCH_NATIVE_NR
+        #define SECCOMP_ARCH_NATIVE_NR 512
+        #endif
+        
+        static DECLARE_BITMAP(allow_native, SECCOMP_ARCH_NATIVE_NR);
+        static DEFINE_SPINLOCK(seccomp_cache_lock);
+        
+        void seccomp_cache_add_native(uint32_t syscall)
+        {
+            if (syscall < SECCOMP_ARCH_NATIVE_NR) {
+                spin_lock(&seccomp_cache_lock);
+                set_bit(syscall, allow_native);
+                spin_unlock(&seccomp_cache_lock);
+            }
+        }
+        
+        bool seccomp_cache_check_native(uint32_t syscall)
+        {
+            bool allowed = false;
+            if (syscall < SECCOMP_ARCH_NATIVE_NR) {
+                spin_lock(&seccomp_cache_lock);
+                allowed = test_bit(syscall, allow_native);
+                spin_unlock(&seccomp_cache_lock);
+            }
+            return allowed;
+        }
+        
+        void seccomp_cache_clear(void)
+        {
+            spin_lock(&seccomp_cache_lock);
+            bitmap_zero(allow_native, SECCOMP_ARCH_NATIVE_NR);
+            spin_unlock(&seccomp_cache_lock);
+        }
+        EOF
+        fi
+        
+        echo "KernelSU integrated successfully"
 
     - name: Integrate SUSFS
       run: |
         echo "Integrating SUSFS..."
         git clone https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 --depth=1 susfs_src
         
-        cp susfs_src/kernel_patches/fs/susfs.c fs/ || true
-        cp susfs_src/kernel_patches/include/linux/susfs.h include/linux/ || true
-        
-        # Patch KernelSU for SUSFS support
-        if [ -d "drivers/kernelsu" ]; then
-          cd drivers/kernelsu
-          patch -p1 < ../../susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch || true
-          cd ../..
+        if [ ! -d "susfs_src" ]; then
+          echo "ERROR: Failed to clone SUSFS repository"
+          exit 1
         fi
         
-        # Patch Kernel for SUSFS support
-        patch -p1 < susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch || true
-
-    - name: Fix Source Flags and Prevent WiFi Issues
-      run: |
-        # Fix versioning to match requested localversion
-        sed -i 's/^SUBLEVEL = .*/SUBLEVEL = 274/' Makefile
+        cp susfs_src/kernel_patches/fs/susfs.c fs/ 2>/dev/null || true
+        cp susfs_src/kernel_patches/include/linux/susfs.h include/linux/ 2>/dev/null || true
         
-        # NETWORK INTEGRITY FIX: Eliminate "+" and "-dirty" suffixes to guarantee WiFi compatibility
+        if [ -d "KernelSU" ]; then
+          if [ -f "susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" ]; then
+            cp susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch KernelSU/
+            cd KernelSU
+            patch -p1 < 10_enable_susfs_for_ksu.patch || true
+            cd ..
+          fi
+        fi
+        
+        if [ -f "susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch" ]; then
+          patch -p1 -f < susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch || true
+        else
+          echo "ERROR: SUSFS main patch not found"
+          exit 1
+        fi
+        
+        echo "SUSFS integration completed"
+
+    - name: Configure Kernel
+      run: |
+        export ARCH=arm64
+        
+        # PREVENT WIFI/NETWORK BREAKAGE (Preserve localversion purely)
+        sed -i 's/^SUBLEVEL = .*/SUBLEVEL = 274/' Makefile
         touch .scmversion
         sed -i 's/echo "+"/#echo "+"/' scripts/setlocalversion
         sed -i 's/-dirty//g' scripts/setlocalversion
         echo "-moto-00517-g2ad8f9e38ea6" > localversion
         
-        # Correctly turn off strict warning errors without breaking flags
+        # CRITICAL COMPILE FIX: Prevent "=implicit-int" errors
         find . -type f -name "Makefile*" -exec sed -i 's/-Werror/-Wno-error/g' {} +
-        
-        # FORCE FIX pgtable.h error for 5.4 Kernel (Moves it here so SUSFS patches don't undo it!)
-        echo "Patching pgtable.h..."
-        find -L KernelSU drivers/kernelsu -type f -name "*.[ch]" -exec sed -i 's/<linux\/pgtable.h>/<asm\/pgtable.h>/g' {} + || true
-
-    - name: Configure Kernel
-      run: |
-        export ARCH=arm64
-        # Create output directory
-        mkdir -p out
         
         # Load base config
         make O=out ARCH=arm64 vendor/fogos_defconfig
         
-        # Enable KSU and SUSFS in .config
+        # Enable KernelSU and SUSFS
         ./scripts/config --file out/.config -e CONFIG_KERNELSU
         ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS
         ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS_HAS_MAGIC_MOUNT
         
-        # Moto G45 Fogos configs
+        # Enable Moto G45 support
         ./scripts/config --file out/.config -e CONFIG_MACH_SM6375
         ./scripts/config --file out/.config -e CONFIG_ARCH_MOTO
         
-        # Disable module security constraints to allow stock Wi-Fi/Audio drivers to load unrestricted
-        ./scripts/config --file out/.config -d CONFIG_WERROR
+        # Enable WiFi
+        ./scripts/config --file out/.config -e CONFIG_WLAN
+        ./scripts/config --file out/.config -e CONFIG_WLAN_VENDOR_QCOM
+        ./scripts/config --file out/.config -e CONFIG_CFG80211
+        ./scripts/config --file out/.config -m CONFIG_WCNSS_CORE
+        ./scripts/config --file out/.config -m CONFIG_WCNSS_CORE_PRONTO
+        ./scripts/config --file out/.config -e CONFIG_CNSS2
+        
+        # Disable problematic features
         ./scripts/config --file out/.config -d CONFIG_MODULE_SIG
         ./scripts/config --file out/.config -d CONFIG_MODULE_SIG_ALL
         ./scripts/config --file out/.config -d CONFIG_MODULE_SIG_FORCE
-        ./scripts/config --file out/.config -d CONFIG_MODVERSIONS
+        ./scripts/config --file out/.config -d CONFIG_WERROR
+        ./scripts/config --file out/.config -d CONFIG_DEBUG_INFO
+        ./scripts/config --file out/.config -d CONFIG_DEBUG_INFO_REDUCED
         
+        # Finalize
         make O=out ARCH=arm64 olddefconfig
 
     - name: Build Kernel
@@ -100,33 +162,45 @@ jobs:
         export ARCH=arm64
         export CROSS_COMPILE=aarch64-linux-gnu-
         
-        # Build command using KCFLAGS to append flags safely
-        make -j$(nproc) O=out ARCH=arm64 CC=aarch64-linux-gnu-gcc \
-          KCFLAGS="-w -Wno-error" \
+        # Build kernel
+        make -j$(nproc) O=out ARCH=arm64 \
+          CROSS_COMPILE=aarch64-linux-gnu- \
+          CC=aarch64-linux-gnu-gcc \
+          HOSTCC=gcc \
           Image.gz-dtb || \
         make -j$(nproc) O=out ARCH=arm64 CC=aarch64-linux-gnu-gcc \
-          KCFLAGS="-w -Wno-error" \
           Image.gz
 
     - name: Create AnyKernel3 Zip
       run: |
-        git clone https://github.com/osm0sis/AnyKernel3.git --depth=1
+        git clone https://github.com/osm0sis/AnyKernel3.git
         
-        # Find whichever image was actually produced
         if [ -f "out/arch/arm64/boot/Image.gz-dtb" ]; then
           cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz-dtb
-        else
+        elif [ -f "out/arch/arm64/boot/Image.gz" ]; then
           cp out/arch/arm64/boot/Image.gz AnyKernel3/Image.gz-dtb
+        else
+          echo "ERROR: No kernel image found"
+          exit 1
         fi
         
         cd AnyKernel3
-        sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-        sed -i "s/kernel.string=.*/kernel.string=Moto G45 Fogos Ultimate V7/g" anykernel.sh
         
-        zip -r9 ../Moto-G45-Fogos-V7.zip ./* -x "*.git*"
+        # SAFELY edit AnyKernel3 script without destroying its flash functions
+        sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
+        sed -i 's/do.modules=1/do.modules=0/g' anykernel.sh
+        sed -i 's/device.name1=.*/device.name1=fogo/g' anykernel.sh
+        sed -i 's/device.name2=.*/device.name2=fogos/g' anykernel.sh
+        sed -i 's/device.name3=.*/device.name3=sm6375/g' anykernel.sh
+        sed -i 's/kernel.string=.*/kernel.string=Moto G45 Kernel - KernelSU + SUSFS/g' anykernel.sh
+        sed -i 's/supported.versions=.*/supported.versions=14-15/g' anykernel.sh
+        
+        chmod 755 anykernel.sh
+        zip -r9 ../Moto-G45-Kernel.zip ./* -x "*.git*"
+        cd ..
 
-    - name: Upload Artifact
+    - name: Upload Artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: Moto-G45-Fogos-Ultimate
-        path: Moto-G45-Fogos-V7.zip
+        name: Moto-G45-Kernel
+        path: Moto-G45-Kernel.zip
