@@ -1,4 +1,4 @@
-name: Moto G45 Fogos-ULTIMATE-V2
+name: Moto G45 Fogos-ULTIMATE-V4
 
 on:
   workflow_dispatch:
@@ -18,16 +18,19 @@ jobs:
     - name: Install Build Tools
       run: |
         sudo apt-get update
-        sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev gcc-aarch64-linux-gnu device-tree-compiler make cpio python3
+        sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev gcc-aarch64-linux-gnu device-tree-compiler make cpio python3 zip
+
+    - name: Clone AnyKernel3
+      run: |
+        git clone https://github.com/osm0sis/AnyKernel3.git AnyKernel
 
     - name: Integrate KernelSU
       run: |
         curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash -s main
 
-    - name: Integrate SUSFS (SAFE MODE)
+    - name: Integrate SUSFS (SAFE)
       run: |
         git clone https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 --depth=1 susfs_src
-
         cp susfs_src/kernel_patches/fs/susfs.c fs/
         cp susfs_src/kernel_patches/include/linux/susfs.h include/linux/
 
@@ -38,29 +41,25 @@ jobs:
           cd ..
         fi
 
-        echo "Skipping incompatible SUSFS full patch"
-
-    - name: Fix KernelSU Errors (pgtable + strncpy)
+    - name: Fix KernelSU Compatibility
       run: |
         FILE="drivers/kernelsu/feature/sucompat.c"
 
         if [ -f "$FILE" ]; then
-          echo "Applying compatibility fixes..."
+          echo "Fixing KernelSU issues..."
 
-          # FIX 1: pgtable
+          # Fix pgtable include
           sed -i 's|#include <linux/pgtable.h>|#include <asm/pgtable.h>|g' $FILE
 
-          # FIX 2: strncpy crash fix (MAIN ERROR)
+          # Fix strncpy issue
           sed -i 's|strncpy_from_user_nofault|strncpy_from_user|g' $FILE
-
         fi
 
-    - name: Configure for Moto G45 Fogos
+    - name: Configure Kernel
       run: |
         export ARCH=arm64
 
         sed -i 's/^SUBLEVEL = .*/SUBLEVEL = 274/' Makefile
-
         sed -i 's/echo "+"/#echo "+"/' scripts/setlocalversion
         echo "-moto-00517-g2ad8f9e38ea6" > localversion
 
@@ -69,11 +68,8 @@ jobs:
         ./scripts/config --file out/.config -e CONFIG_KERNELSU
         ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS
         ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS_HAS_MAGIC_MOUNT
-        ./scripts/config --file out/.config -e CONFIG_WLAN
 
         ./scripts/config --file out/.config -d CONFIG_MODULE_SIG
-        ./scripts/config --file out/.config -d CONFIG_MODULE_SIG_ALL
-        ./scripts/config --file out/.config -d CONFIG_MODULE_SIG_FORCE
         ./scripts/config --file out/.config -d CONFIG_WERROR
 
         make O=out ARCH=arm64 olddefconfig
@@ -82,22 +78,18 @@ jobs:
       run: |
         export ARCH=arm64
         export CROSS_COMPILE=aarch64-linux-gnu-
+        make -j$(nproc) O=out ARCH=arm64 CC=aarch64-linux-gnu-gcc KCFLAGS="-Wno-error"
 
-        make -j$(nproc) O=out ARCH=arm64 CC=aarch64-linux-gnu-gcc KCFLAGS="-Wno-error" Image.gz-dtb || \
-        make -j$(nproc) O=out ARCH=arm64 CC=aarch64-linux-gnu-gcc KCFLAGS="-Wno-error" Image.gz
-
-    - name: Verify Kernel Version
+    - name: Create AnyKernel Zip
       run: |
-        strings out/arch/arm64/boot/Image.gz-dtb | grep "5.4.274" || echo "Version mismatch"
+        cp out/arch/arm64/boot/Image.gz-dtb AnyKernel/
 
-    - name: Organize Artifacts
-      run: |
-        mkdir -p deploy
-        find out/arch/arm64/boot/ -name "Image.gz*" -exec cp {} deploy/ \;
-        find out/arch/arm64/boot/dts/vendor/qcom/ -name "*.dtbo" -exec cp {} deploy/ \; || echo "No DTBOs found"
+        cd AnyKernel
+        zip -r9 Moto-G45-Kernel.zip *
+        mv Moto-G45-Kernel.zip ../
 
     - name: Upload Build
       uses: actions/upload-artifact@v4
       with:
-        name: Moto-G45-Fogos-Ultimate-V2
-        path: deploy/*
+        name: Moto-G45-Ultimate-Kernel
+        path: Moto-G45-Kernel.zip
