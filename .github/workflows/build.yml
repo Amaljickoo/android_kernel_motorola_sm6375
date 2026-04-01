@@ -24,13 +24,10 @@ jobs:
       run: |
         echo "Integrating KernelSU..."
         curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash -s main
-        if [ ! -d "KernelSU" ] && [ ! -d "drivers/kernelsu" ]; then
+        if [ ! -d "KernelSU" ]; then
           echo "ERROR: KernelSU integration failed"
           exit 1
         fi
-        
-        # PGTABLE.H COMPATIBILITY FIX FOR KERNEL 5.4
-        find -L KernelSU drivers/kernelsu -type f -name "*.[ch]" -exec sed -i 's/<linux\/pgtable.h>/<asm\/pgtable.h>/g' {} + || true
         echo "KernelSU integrated successfully"
 
     - name: Integrate SUSFS
@@ -43,23 +40,9 @@ jobs:
           exit 1
         fi
         
-        # Copy SUSFS core files
+        # Copy core files
         cp susfs_src/kernel_patches/fs/susfs.c fs/ 2>/dev/null || true
         cp susfs_src/kernel_patches/include/linux/susfs.h include/linux/ 2>/dev/null || true
-        
-        # Create missing susfs_def.h (needed by fs/notify/fdinfo.c)
-        cat > include/linux/susfs_def.h << 'EOF'
-        /* SPDX-License-Identifier: GPL-2.0 */
-        #ifndef _LINUX_SUSFS_DEF_H
-        #define _LINUX_SUSFS_DEF_H
-        
-        #include <linux/susfs.h>
-        
-        /* Define any required macros or structures here */
-        #define SUSFS_MAGIC 0x53465346
-        
-        #endif /* _LINUX_SUSFS_DEF_H */
-        EOF
         
         # Apply SUSFS patch to KernelSU (if present)
         if [ -d "KernelSU" ]; then
@@ -81,9 +64,39 @@ jobs:
         
         echo "SUSFS integration completed"
 
-    - name: Fix KernelSU seccomp_cache.c
+    - name: Fix SUSFS Header and KernelSU seccomp_cache
       run: |
-        # After SUSFS patches, re-fix the seccomp_cache.c file
+        # PGTABLE.H COMPATIBILITY FIX FOR KERNEL 5.4
+        find -L KernelSU drivers/kernelsu -type f -name "*.[ch]" -exec sed -i 's/<linux\/pgtable.h>/<asm\/pgtable.h>/g' {} + || true
+
+        # Create a proper susfs_def.h that defines the missing macros
+        cat > include/linux/susfs_def.h << 'EOF'
+        /* SPDX-License-Identifier: GPL-2.0 */
+        #ifndef _LINUX_SUSFS_DEF_H
+        #define _LINUX_SUSFS_DEF_H
+        
+        /* Define SUSFS_MAX_LEN_PATHNAME if not already defined */
+        #ifndef SUSFS_MAX_LEN_PATHNAME
+        #define SUSFS_MAX_LEN_PATHNAME 256
+        #endif
+        
+        /* Define task state bit for non-root user app process */
+        #ifndef TASK_STRUCT_NON_ROOT_USER_APP_PROC
+        #define TASK_STRUCT_NON_ROOT_USER_APP_PROC (1UL << 0)
+        #endif
+        
+        /* Define inode state bit for SUSFS kstat */
+        #ifndef INODE_STATE_SUS_KSTAT
+        #define INODE_STATE_SUS_KSTAT (1UL << 30)
+        #endif
+        
+        /* Include the original susfs.h */
+        #include <linux/susfs.h>
+        
+        #endif /* _LINUX_SUSFS_DEF_H */
+        EOF
+        
+        # Fix KernelSU seccomp_cache.c
         if [ -f "KernelSU/infra/seccomp_cache.c" ]; then
           cat > KernelSU/infra/seccomp_cache.c << 'EOF'
         // SPDX-License-Identifier: GPL-2.0
@@ -131,7 +144,7 @@ jobs:
       run: |
         export ARCH=arm64
         
-        # PREVENT WIFI/NETWORK BREAKAGE (Preserve localversion purely)
+        # PREVENT WIFI/NETWORK BREAKAGE
         sed -i 's/^SUBLEVEL = .*/SUBLEVEL = 274/' Makefile
         touch .scmversion
         sed -i 's/echo "+"/#echo "+"/' scripts/setlocalversion
@@ -139,7 +152,6 @@ jobs:
         echo "-moto-00517-g2ad8f9e38ea6" > localversion
         
         # CRITICAL COMPILE FIX: Prevent "=implicit-int" errors
-        # Replacing "-Werror" with "-Wno-error" avoids breaking orphan flags
         find . -type f \( -name "Makefile" -o -name "Kbuild" \) -exec sed -i 's/-Werror\b/-Wno-error/g' {} \;
         
         # Load base config
