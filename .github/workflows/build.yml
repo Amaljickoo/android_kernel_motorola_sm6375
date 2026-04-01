@@ -66,7 +66,7 @@ jobs:
         # PGTABLE.H COMPATIBILITY FIX FOR KERNEL 5.4
         find -L KernelSU drivers/kernelsu -type f -name "*.[ch]" -exec sed -i 's/<linux\/pgtable.h>/<asm\/pgtable.h>/g' {} + || true
 
-        # Create a proper susfs_def.h that defines the missing macros
+        # Create a proper susfs_def.h that defines ALL missing macros
         cat > include/linux/susfs_def.h << 'EOF'
         /* SPDX-License-Identifier: GPL-2.0 */
         #ifndef _LINUX_SUSFS_DEF_H
@@ -78,9 +78,18 @@ jobs:
         #ifndef TASK_STRUCT_NON_ROOT_USER_APP_PROC
         #define TASK_STRUCT_NON_ROOT_USER_APP_PROC (1UL << 0)
         #endif
+        
+        /* inode state flags */
         #ifndef INODE_STATE_SUS_KSTAT
-        #define INODE_STATE_SUS_KSTAT (1UL << 30)
+        #define INODE_STATE_SUS_KSTAT (1UL << 29)
         #endif
+        #ifndef INODE_STATE_SUS_PATH
+        #define INODE_STATE_SUS_PATH (1UL << 30)
+        #endif
+        #ifndef INODE_STATE_OPEN_REDIRECT
+        #define INODE_STATE_OPEN_REDIRECT (1UL << 31)
+        #endif
+        
         #ifndef SUSFS_MAGIC
         #define SUSFS_MAGIC 0x53465346
         #endif
@@ -90,7 +99,7 @@ jobs:
         #endif /* _LINUX_SUSFS_DEF_H */
         EOF
         
-        # INJECT definitions globally into fs.h so task_mmu.c and other core files don't crash
+        # INJECT definitions globally into fs.h so task_mmu.c, namei.c, etc. don't crash
         echo "#include <linux/susfs_def.h>" >> include/linux/fs.h
 
         # Fix KernelSU seccomp_cache.c across ALL clone paths
