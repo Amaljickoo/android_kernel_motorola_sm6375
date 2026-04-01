@@ -31,10 +31,6 @@ jobs:
           echo "KernelSU directory missing! Cloning manually..."
           git clone https://github.com/tiann/KernelSU drivers/kernelsu
         fi
-        
-        # FIX FOR 5.4 KERNEL PGTABLE ERROR
-        echo "Patching pgtable.h for 5.4 Kernel..."
-        find drivers/kernelsu -type f -name "*.c" -exec sed -i 's/<linux\/pgtable.h>/<asm\/pgtable.h>/g' {} +
 
     - name: Integrate SUSFS
       run: |
@@ -67,6 +63,10 @@ jobs:
         
         # Correctly turn off strict warning errors without breaking flags
         find . -type f -name "Makefile*" -exec sed -i 's/-Werror/-Wno-error/g' {} +
+        
+        # FORCE FIX pgtable.h error for 5.4 Kernel (Moves it here so SUSFS patches don't undo it!)
+        echo "Patching pgtable.h..."
+        find -L KernelSU drivers/kernelsu -type f -name "*.[ch]" -exec sed -i 's/<linux\/pgtable.h>/<asm\/pgtable.h>/g' {} + || true
 
     - name: Configure Kernel
       run: |
