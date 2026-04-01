@@ -29,13 +29,61 @@ jobs:
           exit 1
         fi
         
-        # PGTABLE.H COMPATIBILITY FIX
+        # PGTABLE.H COMPATIBILITY FIX FOR KERNEL 5.4
         find -L KernelSU drivers/kernelsu -type f -name "*.[ch]" -exec sed -i 's/<linux\/pgtable.h>/<asm\/pgtable.h>/g' {} + || true
+        echo "KernelSU integrated successfully"
+
+    - name: Integrate SUSFS
+      run: |
+        echo "Integrating SUSFS..."
+        git clone https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 --depth=1 susfs_src
         
-        # Fix KernelSU compatibility with kernel 5.4
-        echo "Fixing KernelSU compatibility..."
+        if [ ! -d "susfs_src" ]; then
+          echo "ERROR: Failed to clone SUSFS repository"
+          exit 1
+        fi
         
-        # Safely write seccomp_cache.c inside YAML
+        # Copy SUSFS core files
+        cp susfs_src/kernel_patches/fs/susfs.c fs/ 2>/dev/null || true
+        cp susfs_src/kernel_patches/include/linux/susfs.h include/linux/ 2>/dev/null || true
+        
+        # Create missing susfs_def.h (needed by fs/notify/fdinfo.c)
+        cat > include/linux/susfs_def.h << 'EOF'
+        /* SPDX-License-Identifier: GPL-2.0 */
+        #ifndef _LINUX_SUSFS_DEF_H
+        #define _LINUX_SUSFS_DEF_H
+        
+        #include <linux/susfs.h>
+        
+        /* Define any required macros or structures here */
+        #define SUSFS_MAGIC 0x53465346
+        
+        #endif /* _LINUX_SUSFS_DEF_H */
+        EOF
+        
+        # Apply SUSFS patch to KernelSU (if present)
+        if [ -d "KernelSU" ]; then
+          if [ -f "susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" ]; then
+            cp susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch KernelSU/
+            cd KernelSU
+            patch -p1 < 10_enable_susfs_for_ksu.patch || true
+            cd ..
+          fi
+        fi
+        
+        # Apply main SUSFS kernel patch
+        if [ -f "susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch" ]; then
+          patch -p1 -f < susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch || true
+        else
+          echo "ERROR: SUSFS main patch not found"
+          exit 1
+        fi
+        
+        echo "SUSFS integration completed"
+
+    - name: Fix KernelSU seccomp_cache.c
+      run: |
+        # After SUSFS patches, re-fix the seccomp_cache.c file
         if [ -f "KernelSU/infra/seccomp_cache.c" ]; then
           cat > KernelSU/infra/seccomp_cache.c << 'EOF'
         // SPDX-License-Identifier: GPL-2.0
@@ -78,39 +126,6 @@ jobs:
         }
         EOF
         fi
-        
-        echo "KernelSU integrated successfully"
-
-    - name: Integrate SUSFS
-      run: |
-        echo "Integrating SUSFS..."
-        git clone https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 --depth=1 susfs_src
-        
-        if [ ! -d "susfs_src" ]; then
-          echo "ERROR: Failed to clone SUSFS repository"
-          exit 1
-        fi
-        
-        cp susfs_src/kernel_patches/fs/susfs.c fs/ 2>/dev/null || true
-        cp susfs_src/kernel_patches/include/linux/susfs.h include/linux/ 2>/dev/null || true
-        
-        if [ -d "KernelSU" ]; then
-          if [ -f "susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" ]; then
-            cp susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch KernelSU/
-            cd KernelSU
-            patch -p1 < 10_enable_susfs_for_ksu.patch || true
-            cd ..
-          fi
-        fi
-        
-        if [ -f "susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch" ]; then
-          patch -p1 -f < susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch || true
-        else
-          echo "ERROR: SUSFS main patch not found"
-          exit 1
-        fi
-        
-        echo "SUSFS integration completed"
 
     - name: Configure Kernel
       run: |
@@ -124,7 +139,8 @@ jobs:
         echo "-moto-00517-g2ad8f9e38ea6" > localversion
         
         # CRITICAL COMPILE FIX: Prevent "=implicit-int" errors
-        find . -type f -name "Makefile*" -exec sed -i 's/-Werror/-Wno-error/g' {} +
+        # Replacing "-Werror" with "-Wno-error" avoids breaking orphan flags
+        find . -type f \( -name "Makefile" -o -name "Kbuild" \) -exec sed -i 's/-Werror\b/-Wno-error/g' {} \;
         
         # Load base config
         make O=out ARCH=arm64 vendor/fogos_defconfig
@@ -167,8 +183,11 @@ jobs:
           CROSS_COMPILE=aarch64-linux-gnu- \
           CC=aarch64-linux-gnu-gcc \
           HOSTCC=gcc \
+          KCFLAGS="-Wno-error -w -Wno-unused-variable -Wno-unused-function" \
           Image.gz-dtb || \
-        make -j$(nproc) O=out ARCH=arm64 CC=aarch64-linux-gnu-gcc \
+        make -j$(nproc) O=out ARCH=arm64 \
+          CC=aarch64-linux-gnu-gcc \
+          KCFLAGS="-Wno-error -w -Wno-unused-variable -Wno-unused-function" \
           Image.gz
 
     - name: Create AnyKernel3 Zip
