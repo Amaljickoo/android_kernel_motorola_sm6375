@@ -31,6 +31,10 @@ jobs:
           echo "KernelSU directory missing! Cloning manually..."
           git clone https://github.com/tiann/KernelSU drivers/kernelsu
         fi
+        
+        # FIX FOR 5.4 KERNEL PGTABLE ERROR
+        echo "Patching pgtable.h for 5.4 Kernel..."
+        find drivers/kernelsu -type f -name "*.c" -exec sed -i 's/<linux\/pgtable.h>/<asm\/pgtable.h>/g' {} +
 
     - name: Integrate SUSFS
       run: |
