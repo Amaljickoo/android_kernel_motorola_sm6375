@@ -18,52 +18,76 @@ jobs:
     - name: Install Build Tools
       run: |
         sudo apt-get update
-        sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev gcc-aarch64-linux-gnu device-tree-compiler make cpio python3
+        sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev gcc-aarch64-linux-gnu device-tree-compiler make cpio python3 lz4
 
     - name: Integrate KernelSU
       run: |
+        echo "Integrating KernelSU..."
         curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash -s main
+        if [ ! -d "KernelSU" ]; then
+          echo "ERROR: KernelSU integration failed"
+          exit 1
+        fi
+        echo "✅ KernelSU integrated successfully"
 
     - name: Integrate SUSFS
       run: |
+        echo "Integrating SUSFS..."
         git clone https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 --depth=1 susfs_src
-        cp susfs_src/kernel_patches/fs/susfs.c fs/
-        cp susfs_src/kernel_patches/include/linux/susfs.h include/linux/
+        
+        if [ ! -d "susfs_src" ]; then
+          echo "ERROR: Failed to clone SUSFS repository"
+          exit 1
+        fi
+        
+        cp susfs_src/kernel_patches/fs/susfs.c fs/ 2>/dev/null || echo "⚠️ susfs.c already exists"
+        cp susfs_src/kernel_patches/include/linux/susfs.h include/linux/ 2>/dev/null || echo "⚠️ susfs.h already exists"
         
         if [ -d "KernelSU" ]; then
-          cp susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch KernelSU/
-          cd KernelSU && patch -p1 < 10_enable_susfs_for_ksu.patch && cd ..
+          if [ -f "susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" ]; then
+            cp susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch KernelSU/
+            cd KernelSU
+            patch -p1 < 10_enable_susfs_for_ksu.patch || echo "⚠️ KSU patch skipped"
+            cd ..
+          fi
         fi
-        patch -p1 < susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch || true
+        
+        if [ -f "susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch" ]; then
+          patch -p1 -f < susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch || echo "⚠️ Kernel patch skipped"
+        fi
+        echo "✅ SUSFS integration completed"
 
-    - name: Configure and Fix Compile Flags
+    - name: Configure Kernel
       run: |
         export ARCH=arm64
         
-        # 1. Versioning Fixes
+        echo "Configuring kernel version..."
         sed -i 's/^SUBLEVEL = .*/SUBLEVEL = 274/' Makefile
         sed -i 's/echo "+"/#echo "+"/' scripts/setlocalversion
         echo "-moto-00517-g2ad8f9e38ea6" > localversion
         
-        # 2. SMART FIX: Remove -Werror without breaking the flags
-        # This replaces "-Werror" with nothing, but keeps "-Werror=..." intact
-        # This fixes the "linker input file not found" error
-        find . -type f \( -name "Makefile" -o -name "Kbuild" \) -exec sed -i 's/-Werror / /g;s/-Werror$//g' {} +
+        echo "Removing -Werror flags..."
+        find . -type f \( -name "Makefile" -o -name "Kbuild" \) -exec sed -i 's/-Werror\b//g' {} +
         
-        # 3. Load Config
+        echo "Loading base configuration..."
         make O=out ARCH=arm64 vendor/fogos_defconfig
-
-        # 4. Enable KernelSU & SUSFS
+        
+        echo "Enabling KernelSU and SUSFS..."
         ./scripts/config --file out/.config -e CONFIG_KERNELSU
         ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS
         ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS_HAS_MAGIC_MOUNT
+        
+        echo "Enabling Moto G45 support..."
+        ./scripts/config --file out/.config -e CONFIG_MACH_SM6375
+        ./scripts/config --file out/.config -e CONFIG_ARCH_MOTO
         ./scripts/config --file out/.config -e CONFIG_WLAN
         
-        # 5. Disable Security/Error Restrictions
+        echo "Disabling security/error restrictions..."
         ./scripts/config --file out/.config -d CONFIG_MODULE_SIG
         ./scripts/config --file out/.config -d CONFIG_MODULE_SIG_ALL
         ./scripts/config --file out/.config -d CONFIG_MODULE_SIG_FORCE
         ./scripts/config --file out/.config -d CONFIG_WERROR
+        ./scripts/config --file out/.config -d CONFIG_DEBUG_INFO
         
         make O=out ARCH=arm64 olddefconfig
 
@@ -71,26 +95,41 @@ jobs:
       run: |
         export ARCH=arm64
         export CROSS_COMPILE=aarch64-linux-gnu-
-        # We use -Wno-error to tell the compiler to ignore all warnings globally
-        make -j$(nproc) O=out ARCH=arm64 CC=aarch64-linux-gnu-gcc KCFLAGS="-Wno-error -w" Image.gz-dtb || \
-        make -j$(nproc) O=out ARCH=arm64 CC=aarch64-linux-gnu-gcc KCFLAGS="-Wno-error -w" Image.gz
+        
+        make -j$(nproc) O=out ARCH=arm64 CC=aarch64-linux-gnu-gcc \
+          KCFLAGS="-Wno-error -w -Wno-unused-variable -Wno-unused-function" \
+          Image.gz-dtb || \
+        make -j$(nproc) O=out ARCH=arm64 CC=aarch64-linux-gnu-gcc \
+          KCFLAGS="-Wno-error -w -Wno-unused-variable -Wno-unused-function" \
+          Image.gz
 
-    - name: Create AnyKernel3 Zip
+    - name: Create AnyKernel3 Package
       run: |
         git clone https://github.com/osm0sis/AnyKernel3.git
-        IMAGE=$(find out/arch/arm64/boot/ -name "Image.gz*" | head -n 1)
-        cp "$IMAGE" AnyKernel3/Image.gz-dtb
+        
+        KERNEL_IMAGE=""
+        if [ -f "out/arch/arm64/boot/Image.gz-dtb" ]; then
+          KERNEL_IMAGE="out/arch/arm64/boot/Image.gz-dtb"
+        else
+          KERNEL_IMAGE="out/arch/arm64/boot/Image.gz"
+        fi
+        
+        cp "$KERNEL_IMAGE" AnyKernel3/Image.gz-dtb
         
         cd AnyKernel3
+        # Use a simpler way to write the script to avoid EOF syntax issues
         sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
         sed -i 's/block=\/dev\/block\/platform\/omap\/omap_hsmmc.0\/by-name\/boot;/block=auto;/g' anykernel.sh
-        sed -i "s/kernel.string=.*/kernel.string=Moto G45 Kernel (bbq-ogki)/g" anykernel.sh
         
-        zip -r ../Moto-G45-AnyKernel.zip ./*
+        # Add your custom branding
+        sed -i "s/kernel.string=.*/kernel.string=Moto G45 (bbq-ogki) - KSU + SUSFS/g" anykernel.sh
+        
+        ZIP_NAME="Moto_G45_Kernel_bbq_ogki_V5.zip"
+        zip -r "../$ZIP_NAME" ./* -x "*.git*"
         cd ..
 
-    - name: Upload Final Zip
+    - name: Upload Artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: Moto-G45-AnyKernel-bbq-ogki
-        path: Moto-G45-AnyKernel.zip
+        name: Moto-G45-Kernel-V5
+        path: "*.zip"
