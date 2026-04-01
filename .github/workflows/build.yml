@@ -54,14 +54,18 @@ jobs:
         # Patch Kernel for SUSFS support
         patch -p1 < susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch || true
 
-    - name: Fix Source Flags
+    - name: Fix Source Flags and Prevent WiFi Issues
       run: |
-        # Fix versioning to match your requested localversion
+        # Fix versioning to match requested localversion
         sed -i 's/^SUBLEVEL = .*/SUBLEVEL = 274/' Makefile
+        
+        # NETWORK INTEGRITY FIX: Eliminate "+" and "-dirty" suffixes to guarantee WiFi compatibility
+        touch .scmversion
         sed -i 's/echo "+"/#echo "+"/' scripts/setlocalversion
+        sed -i 's/-dirty//g' scripts/setlocalversion
         echo "-moto-00517-g2ad8f9e38ea6" > localversion
         
-        # Correctly turn off strict warning errors without breaking the flags
+        # Correctly turn off strict warning errors without breaking flags
         find . -type f -name "Makefile*" -exec sed -i 's/-Werror/-Wno-error/g' {} +
 
     - name: Configure Kernel
@@ -81,8 +85,13 @@ jobs:
         # Moto G45 Fogos configs
         ./scripts/config --file out/.config -e CONFIG_MACH_SM6375
         ./scripts/config --file out/.config -e CONFIG_ARCH_MOTO
+        
+        # Disable module security constraints to allow stock Wi-Fi/Audio drivers to load unrestricted
         ./scripts/config --file out/.config -d CONFIG_WERROR
         ./scripts/config --file out/.config -d CONFIG_MODULE_SIG
+        ./scripts/config --file out/.config -d CONFIG_MODULE_SIG_ALL
+        ./scripts/config --file out/.config -d CONFIG_MODULE_SIG_FORCE
+        ./scripts/config --file out/.config -d CONFIG_MODVERSIONS
         
         make O=out ARCH=arm64 olddefconfig
 
