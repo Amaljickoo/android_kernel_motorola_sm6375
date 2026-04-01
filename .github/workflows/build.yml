@@ -1,4 +1,4 @@
-name: Moto G45 Fogos-KSU-SUSFS-AnyKernel
+name: Moto G45 Fogos-ULTIMATE-V5
 
 on:
   workflow_dispatch:
@@ -36,7 +36,7 @@ jobs:
         fi
         patch -p1 < susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch || true
 
-    - name: Configure and Brute-Force Warning Fix
+    - name: Configure and Fix Compile Flags
       run: |
         export ARCH=arm64
         
@@ -45,9 +45,10 @@ jobs:
         sed -i 's/echo "+"/#echo "+"/' scripts/setlocalversion
         echo "-moto-00517-g2ad8f9e38ea6" > localversion
         
-        # 2. THE NUCLEAR FIX: Remove -Werror from EVERY Makefile/Kbuild in the source
-        # This stops the 17158/9929 errors by forcing them to be warnings only
-        find . -type f \( -name "Makefile" -o -name "Kbuild" \) -exec sed -i 's/-Werror//g' {} +
+        # 2. SMART FIX: Remove -Werror without breaking the flags
+        # This replaces "-Werror" with nothing, but keeps "-Werror=..." intact
+        # This fixes the "linker input file not found" error
+        find . -type f \( -name "Makefile" -o -name "Kbuild" \) -exec sed -i 's/-Werror / /g;s/-Werror$//g' {} +
         
         # 3. Load Config
         make O=out ARCH=arm64 vendor/fogos_defconfig
@@ -58,7 +59,7 @@ jobs:
         ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS_HAS_MAGIC_MOUNT
         ./scripts/config --file out/.config -e CONFIG_WLAN
         
-        # 5. Safety measures for Stock ROM
+        # 5. Disable Security/Error Restrictions
         ./scripts/config --file out/.config -d CONFIG_MODULE_SIG
         ./scripts/config --file out/.config -d CONFIG_MODULE_SIG_ALL
         ./scripts/config --file out/.config -d CONFIG_MODULE_SIG_FORCE
@@ -70,30 +71,26 @@ jobs:
       run: |
         export ARCH=arm64
         export CROSS_COMPILE=aarch64-linux-gnu-
-        # Use -w to completely silence warnings to keep the log clean
-        make -j$(nproc) O=out ARCH=arm64 CC=aarch64-linux-gnu-gcc KCFLAGS="-w" Image.gz-dtb || \
-        make -j$(nproc) O=out ARCH=arm64 CC=aarch64-linux-gnu-gcc KCFLAGS="-w" Image.gz
+        # We use -Wno-error to tell the compiler to ignore all warnings globally
+        make -j$(nproc) O=out ARCH=arm64 CC=aarch64-linux-gnu-gcc KCFLAGS="-Wno-error -w" Image.gz-dtb || \
+        make -j$(nproc) O=out ARCH=arm64 CC=aarch64-linux-gnu-gcc KCFLAGS="-Wno-error -w" Image.gz
 
     - name: Create AnyKernel3 Zip
       run: |
         git clone https://github.com/osm0sis/AnyKernel3.git
-        # Find the built kernel
         IMAGE=$(find out/arch/arm64/boot/ -name "Image.gz*" | head -n 1)
         cp "$IMAGE" AnyKernel3/Image.gz-dtb
         
-        # Configure AnyKernel3 for Moto G45 (bbq-ogki)
         cd AnyKernel3
         sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
         sed -i 's/block=\/dev\/block\/platform\/omap\/omap_hsmmc.0\/by-name\/boot;/block=auto;/g' anykernel.sh
-        # Insert bbq-ogki identifier
-        sed -i "s/kernel.string=.*/kernel.string=Moto G45 KernelSU SUSFS (bbq-ogki)/g" anykernel.sh
+        sed -i "s/kernel.string=.*/kernel.string=Moto G45 Kernel (bbq-ogki)/g" anykernel.sh
         
-        # Pack the zip
-        zip -r ../Moto-G45-Kernel-V4.zip ./*
+        zip -r ../Moto-G45-AnyKernel.zip ./*
         cd ..
 
-    - name: Upload Final Flashable Zip
+    - name: Upload Final Zip
       uses: actions/upload-artifact@v4
       with:
         name: Moto-G45-AnyKernel-bbq-ogki
-        path: Moto-G45-Kernel-V4.zip
+        path: Moto-G45-AnyKernel.zip
