@@ -67,7 +67,7 @@ jobs:
         # 1. PGTABLE.H compatibility
         find -L KernelSU drivers/kernelsu -type f -name "*.[ch]" -exec sed -i 's/<linux\/pgtable.h>/<asm\/pgtable.h>/g' {} + || true
 
-        # 2. Create susfs_def.h with all macros AND struct vfsmount extension
+        # 2. Create susfs_def.h with all macros including INODE_STATE_SUS_MOUNT
         cat > include/linux/susfs_def.h << 'EOF'
         /* SPDX-License-Identifier: GPL-2.0 */
         #ifndef _LINUX_SUSFS_DEF_H
@@ -94,6 +94,10 @@ jobs:
         #endif
         #ifndef INODE_STATE_OPEN_REDIRECT
         #define INODE_STATE_OPEN_REDIRECT (1UL << 31)
+        #endif
+        /* ADDED: INODE_STATE_SUS_MOUNT used in fs/statfs.c */
+        #ifndef INODE_STATE_SUS_MOUNT
+        #define INODE_STATE_SUS_MOUNT (1UL << 28)
         #endif
         
         /* SUSFS magic number */
@@ -142,8 +146,7 @@ jobs:
         #endif /* _LINUX_SUSFS_DEF_H */
         EOF
         
-        # 3. MANUALLY add susfs_mnt_id_backup to struct vfsmount in mount.h
-        #    Because the SUSFS patch fails to apply this hunk.
+        # 3. Manually add susfs_mnt_id_backup to struct vfsmount in mount.h
         if grep -q "susfs_mnt_id_backup" include/linux/mount.h; then
           echo "Field already exists in mount.h"
         else
@@ -174,12 +177,19 @@ jobs:
         # 7. Fix allowlist.c: define TWA_RESUME if not defined
         for allow_file in "KernelSU/policy/allowlist.c" "drivers/kernelsu/policy/allowlist.c"; do
           if [ -f "$allow_file" ]; then
-            # Add definition at the top of the file
             sed -i '1i #ifndef TWA_RESUME\n#define TWA_RESUME 0\n#endif' "$allow_file"
           fi
         done
         
-        # 8. Re-fix seccomp_cache.c (ensure it's the patched version)
+        # 8. Fix app_profile.c: comment out the filter_count access (kernel 5.4 compatibility)
+        for app_file in "KernelSU/policy/app_profile.c" "drivers/kernelsu/policy/app_profile.c"; do
+          if [ -f "$app_file" ]; then
+            # Comment out the line that uses filter_count
+            sed -i 's/atomic_set(&current->seccomp.filter_count, 0);/\/\/ atomic_set(&current->seccomp.filter_count, 0); \/\/ disabled for kernel 5.4/' "$app_file"
+          fi
+        done
+        
+        # 9. Re-fix seccomp_cache.c
         for seccomp_file in "KernelSU/infra/seccomp_cache.c" "drivers/kernelsu/infra/seccomp_cache.c"; do
           if [ -f "$seccomp_file" ]; then
             cat > "$seccomp_file" << 'EOF2'
