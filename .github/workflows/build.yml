@@ -52,7 +52,7 @@ jobs:
           fi
         fi
         
-        # Apply main patch with --no-backup-if-mismatch to avoid rejects breaking build
+        # Apply main patch but ignore failures – we'll manually fix missing parts
         if [ -f "susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch" ]; then
           patch -p1 -f --no-backup-if-mismatch < susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch || true
         else
@@ -62,18 +62,18 @@ jobs:
         
         echo "SUSFS integration completed"
 
-    - name: Fix SUSFS Header, KernelSU seccomp_cache, and Missing Definitions
+    - name: Fix SUSFS, KernelSU and Missing Kernel 5.4 Definitions
       run: |
-        # 1. PGTABLE.H compatibility for kernel 5.4
+        # 1. PGTABLE.H compatibility
         find -L KernelSU drivers/kernelsu -type f -name "*.[ch]" -exec sed -i 's/<linux\/pgtable.h>/<asm\/pgtable.h>/g' {} + || true
 
-        # 2. Create susfs_def.h with all missing macros and declarations
+        # 2. Create susfs_def.h with all macros AND struct vfsmount extension
         cat > include/linux/susfs_def.h << 'EOF'
         /* SPDX-License-Identifier: GPL-2.0 */
         #ifndef _LINUX_SUSFS_DEF_H
         #define _LINUX_SUSFS_DEF_H
         
-        #include <linux/idr.h>  // for ida
+        #include <linux/idr.h>
         
         /* SUSFS path length */
         #ifndef SUSFS_MAX_LEN_PATHNAME
@@ -101,7 +101,7 @@ jobs:
         #define SUSFS_MAGIC 0x53465346
         #endif
         
-        /* Missing mount ID constants */
+        /* Mount ID constants */
         #ifndef DEFAULT_SUS_MNT_ID
         #define DEFAULT_SUS_MNT_ID 10000
         #endif
@@ -112,7 +112,7 @@ jobs:
         #define DEFAULT_SUS_MNT_ID_FOR_KSU_PROC_UNSHARE 9999
         #endif
         
-        /* Missing clone flags */
+        /* Clone flags */
         #ifndef CL_COPY_MNT_NS
         #define CL_COPY_MNT_NS 0x00001000
         #endif
@@ -120,7 +120,7 @@ jobs:
         #define CL_ZYGOTE_COPY_MNT_NS 0x00002000
         #endif
         
-        /* SUSFS auto-mount feature toggles (disable by default) */
+        /* SUSFS auto-mount feature toggles (disable) */
         #ifndef susfs_is_auto_add_sus_bind_mount_enabled
         #define susfs_is_auto_add_sus_bind_mount_enabled 0
         #endif
@@ -131,23 +131,31 @@ jobs:
         #define susfs_is_auto_add_sus_ksu_default_mount_enabled 0
         #endif
         
-        /* Declare the IDA structures used in fs/namespace.c */
+        /* Declare IDA structures */
         extern struct ida susfs_mnt_id_ida;
         extern struct ida susfs_mnt_group_ida;
         
-        /* Declare the function that checks zygote domain (defined in KernelSU) */
+        /* Declare functions */
         extern bool is_current_zygote_domain(void);
         extern bool susfs_is_current_ksu_domain(void);
         
         #endif /* _LINUX_SUSFS_DEF_H */
         EOF
         
-        # 3. Inject the header into fs/namespace.c and also into fs.h
+        # 3. MANUALLY add susfs_mnt_id_backup to struct vfsmount in mount.h
+        #    Because the SUSFS patch fails to apply this hunk.
+        if grep -q "susfs_mnt_id_backup" include/linux/mount.h; then
+          echo "Field already exists in mount.h"
+        else
+          sed -i '/struct vfsmount {/a \ \tint susfs_mnt_id_backup;' include/linux/mount.h
+          echo "Added susfs_mnt_id_backup to struct vfsmount"
+        fi
+        
+        # 4. Inject header into fs.h and fs/namespace.c
         echo '#include <linux/susfs_def.h>' >> include/linux/fs.h
-        # Also add it at the top of fs/namespace.c (if not already there)
         sed -i '1i #include <linux/susfs_def.h>' fs/namespace.c || true
         
-        # 4. Define the IDA structures in a C file (add to fs/namespace.c)
+        # 5. Define IDA structures at the end of fs/namespace.c
         cat >> fs/namespace.c << 'EOF'
         /* SUSFS IDA definitions */
         DEFINE_IDA(susfs_mnt_id_ida);
@@ -156,14 +164,22 @@ jobs:
         EXPORT_SYMBOL(susfs_mnt_group_ida);
         EOF
         
-        # 5. Fix pkg_observer.c: replace .handle_inode_event with .handle_event for kernel 5.4
+        # 6. Fix pkg_observer.c: handle_inode_event -> handle_event
         for pkg_file in "KernelSU/manager/pkg_observer.c" "drivers/kernelsu/manager/pkg_observer.c"; do
           if [ -f "$pkg_file" ]; then
             sed -i 's/\.handle_inode_event/.handle_event/g' "$pkg_file"
           fi
         done
         
-        # 6. Re-fix seccomp_cache.c (already done but ensure it's applied)
+        # 7. Fix allowlist.c: define TWA_RESUME if not defined
+        for allow_file in "KernelSU/policy/allowlist.c" "drivers/kernelsu/policy/allowlist.c"; do
+          if [ -f "$allow_file" ]; then
+            # Add definition at the top of the file
+            sed -i '1i #ifndef TWA_RESUME\n#define TWA_RESUME 0\n#endif' "$allow_file"
+          fi
+        done
+        
+        # 8. Re-fix seccomp_cache.c (ensure it's the patched version)
         for seccomp_file in "KernelSU/infra/seccomp_cache.c" "drivers/kernelsu/infra/seccomp_cache.c"; do
           if [ -f "$seccomp_file" ]; then
             cat > "$seccomp_file" << 'EOF2'
@@ -215,14 +231,14 @@ jobs:
       run: |
         export ARCH=arm64
         
-        # PREVENT WIFI/NETWORK BREAKAGE
+        # Prevent WiFi/network breakage
         sed -i 's/^SUBLEVEL = .*/SUBLEVEL = 274/' Makefile
         touch .scmversion
         sed -i 's/echo "+"/#echo "+"/' scripts/setlocalversion
         sed -i 's/-dirty//g' scripts/setlocalversion
         echo "-moto-00517-g2ad8f9e38ea6" > localversion
         
-        # Disable -Werror globally to avoid strict errors
+        # Disable -Werror globally
         find . -type f \( -name "Makefile" -o -name "Kbuild" \) -exec sed -i 's/-Werror\b/-Wno-error/g' {} \;
         
         # Load base config
@@ -261,7 +277,6 @@ jobs:
         export ARCH=arm64
         export CROSS_COMPILE=aarch64-linux-gnu-
         
-        # Build kernel
         make -j$(nproc) O=out ARCH=arm64 \
           CROSS_COMPILE=aarch64-linux-gnu- \
           CC=aarch64-linux-gnu-gcc \
