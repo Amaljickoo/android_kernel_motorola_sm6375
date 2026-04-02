@@ -20,21 +20,23 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev gcc-aarch64-linux-gnu device-tree-compiler make cpio python3 lz4 patch
 
-    - name: Integrate KernelSU
+    - name: Integrate KernelSU (FIXED)
       run: |
         set -e
-        echo "[+] Integrating KernelSU"
+
         curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash -s main
 
-        # FIX: Do NOT move if already inside drivers
+        # 🔥 IMPORTANT FIX: only move if needed
         if [ -d "KernelSU" ] && [ ! -d "drivers/kernelsu" ]; then
+          mkdir -p drivers
           mv KernelSU drivers/kernelsu
         fi
+
+        echo "KernelSU setup done"
 
     - name: Integrate SUSFS
       run: |
         set -e
-        echo "[+] Integrating SUSFS"
 
         git clone https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 --depth=1 susfs_src
 
@@ -46,32 +48,31 @@ jobs:
           patch -p1 < susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch || true
         fi
 
-        if [ -d drivers/kernelsu ] && [ -f susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch ]; then
+        if [ -d "drivers/kernelsu" ] && [ -f susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch ]; then
           cd drivers/kernelsu
           patch -p1 < ../../susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch || true
           cd ../..
         fi
 
-    - name: Fix Kernel & KernelSU Compatibility
+        echo "SUSFS integrated"
+
+    - name: Fix Kernel & KernelSU
       run: |
         set -e
 
-        # Fix pgtable include
+        # Fix pgtable
         find drivers/kernelsu -type f -name "*.[ch]" -exec sed -i 's#<linux/pgtable.h>#<asm/pgtable.h>#g' {} + || true
 
         # Fix pkg observer
         find drivers/kernelsu -name "pkg_observer.c" -exec sed -i 's/\.handle_inode_event/.handle_event/g' {} + || true
 
         # Prevent duplicate IDA
-        if ! grep -q "susfs_mnt_id_ida" fs/namespace.c; then
-          echo "Adding SUSFS IDA safely"
-          echo -e "\nDEFINE_IDA(susfs_mnt_id_ida);\nDEFINE_IDA(susfs_mnt_group_ida);" >> fs/namespace.c
-        fi
+        grep -q "susfs_mnt_id_ida" fs/namespace.c || \
+        sed -i 's/DEFINE_IDA(mnt_group_ida);/DEFINE_IDA(mnt_group_ida);\nDEFINE_IDA(susfs_mnt_id_ida);\nDEFINE_IDA(susfs_mnt_group_ida);/' fs/namespace.c
 
         # Fix mount struct
-        if ! grep -q "susfs_mnt_id_backup" include/linux/mount.h; then
-          sed -i '/struct vfsmount {/a \    int susfs_mnt_id_backup;' include/linux/mount.h
-        fi
+        grep -q "susfs_mnt_id_backup" include/linux/mount.h || \
+        sed -i '/struct vfsmount {/a \	int susfs_mnt_id_backup;' include/linux/mount.h
 
     - name: Configure Kernel
       run: |
@@ -87,7 +88,6 @@ jobs:
         ./scripts/config --file out/.config -e CONFIG_WLAN
         ./scripts/config --file out/.config -e CONFIG_CFG80211
         ./scripts/config --file out/.config -e CONFIG_WLAN_VENDOR_QCOM
-        ./scripts/config --file out/.config -e CONFIG_CNSS2
 
         ./scripts/config --file out/.config -d CONFIG_WERROR
         ./scripts/config --file out/.config -d CONFIG_DEBUG_INFO
@@ -114,6 +114,7 @@ jobs:
     - name: Create AnyKernel3 Zip
       run: |
         set -e
+
         git clone https://github.com/osm0sis/AnyKernel3.git --depth=1
 
         if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
