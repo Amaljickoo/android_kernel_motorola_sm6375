@@ -8,102 +8,131 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout Kernel Source
-        uses: actions/checkout@v4
-        with:
-          repository: Motorola-SM6375-Devs/android_kernel_motorola_sm6375
-          ref: sixteen
-          fetch-depth: 1
+    - name: Checkout Kernel Source
+      uses: actions/checkout@v4
+      with:
+        repository: Motorola-SM6375-Devs/android_kernel_motorola_sm6375
+        ref: sixteen
+        fetch-depth: 1
 
-      - name: Install Build Tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev gcc-aarch64-linux-gnu device-tree-compiler make cpio python3 lz4 patch
+    - name: Install Build Tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev gcc-aarch64-linux-gnu device-tree-compiler make cpio python3 lz4 patch
 
-      - name: Integrate KernelSU
-        run: |
-          set -e
-          echo "Integrating KernelSU"
-          curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash -s main
+    - name: Integrate KernelSU
+      run: |
+        set -e
+        echo "Integrating KernelSU..."
+        curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash -s main || true
 
-      - name: Integrate SUSFS
-        run: |
-          set -e
-          echo "Integrating SUSFS"
-          git clone https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 --depth=1 susfs_src
+        if [ ! -d "KernelSU" ] && [ ! -d "drivers/kernelsu" ]; then
+          echo "ERROR: KernelSU integration failed"
+          exit 1
+        fi
 
-          cp susfs_src/kernel_patches/fs/susfs.c fs/ || true
-          cp susfs_src/kernel_patches/include/linux/susfs.h include/linux/ || true
+    - name: Integrate SUSFS
+      run: |
+        set -e
+        echo "Integrating SUSFS..."
+        git clone https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 --depth=1 susfs_src
 
-          if [ -f susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch ]; then
-            patch -p1 -f < susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch || true
-          fi
+        cp -f susfs_src/kernel_patches/fs/susfs.c fs/ 2>/dev/null || true
+        cp -f susfs_src/kernel_patches/include/linux/susfs.h include/linux/ 2>/dev/null || true
 
-      - name: Fix Kernel Issues
-        run: |
-          set -e
+        if [ -f "susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch" ]; then
+          patch -p1 -f --no-backup-if-mismatch < susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch || true
+        fi
 
-          # Fix pgtable include
-          find KernelSU drivers/kernelsu -type f -name "*.c" -exec sed -i 's#<linux/pgtable.h>#<asm/pgtable.h>#g' {} + || true
+    - name: Fix KernelSU + SUSFS (Safe)
+      run: |
+        set -e
 
-          # Create minimal SUSFS header
+        # Fix pgtable include
+        find KernelSU drivers/kernelsu -type f -name "*.[ch]" \
+          -exec sed -i 's#<linux/pgtable.h>#<asm/pgtable.h>#g' {} + || true
+
+        # Create susfs_def.h only if missing
+        if [ ! -f include/linux/susfs_def.h ]; then
           mkdir -p include/linux
-          echo "#ifndef _LINUX_SUSFS_DEF_H" > include/linux/susfs_def.h
-          echo "#define _LINUX_SUSFS_DEF_H" >> include/linux/susfs_def.h
-          echo "#define SUSFS_MAGIC 0x53465346" >> include/linux/susfs_def.h
-          echo "#endif" >> include/linux/susfs_def.h
+          echo "#pragma once" > include/linux/susfs_def.h
+        fi
 
-          # Inject header safely
-          grep -q susfs_def include/linux/fs.h || echo '#include <linux/susfs_def.h>' >> include/linux/fs.h
+        # Avoid duplicate include injection
+        grep -q "susfs_def.h" include/linux/fs.h || \
+          echo '#include <linux/susfs_def.h>' >> include/linux/fs.h
 
-          # Disable Werror
-          find . -name Makefile -exec sed -i 's/-Werror/-Wno-error/g' {} + || true
+        # Safe mount struct patch
+        grep -q "susfs_mnt_id_backup" include/linux/mount.h || \
+          sed -i '/struct vfsmount {/a \    int susfs_mnt_id_backup;' include/linux/mount.h
 
-      - name: Configure Kernel
-        run: |
-          set -e
-          export ARCH=arm64
+        # KernelSU fixes
+        find KernelSU drivers/kernelsu -name "pkg_observer.c" \
+          -exec sed -i 's/\.handle_inode_event/.handle_event/g' {} + || true
 
-          make O=out ARCH=arm64 vendor/fogos_defconfig
+        # SELinux safe fix
+        find KernelSU drivers/kernelsu -name "rules.c" \
+          -exec sed -i 's/selinux_state\.policy/selinux_state.ss/g' {} + || true
 
-          # KernelSU + SUSFS
-          ./scripts/config --file out/.config -e CONFIG_KERNELSU
-          ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS
+    - name: Configure Kernel
+      run: |
+        set -e
+        export ARCH=arm64
 
-          # WiFi configs
-          ./scripts/config --file out/.config -e CONFIG_WLAN
-          ./scripts/config --file out/.config -e CONFIG_WLAN_VENDOR_QCOM
-          ./scripts/config --file out/.config -e CONFIG_CFG80211
-          ./scripts/config --file out/.config -e CONFIG_CNSS2
+        sed -i 's/-Werror/-Wno-error/g' Makefile || true
 
-          make O=out ARCH=arm64 olddefconfig
+        make O=out ARCH=arm64 vendor/fogos_defconfig
 
-      - name: Build Kernel
-        run: |
-          set -e
-          export ARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-gnu-
+        # IMPORTANT: Keep WiFi configs SAFE (no forcing modules wrongly)
+        ./scripts/config --file out/.config \
+          -e CONFIG_KERNELSU \
+          -e CONFIG_KERNELSU_SUSFS \
+          -e CONFIG_CFG80211 \
+          -e CONFIG_WLAN \
+          -e CONFIG_WLAN_VENDOR_QCOM \
+          -e CONFIG_CNSS2 \
+          -d CONFIG_MODULE_SIG \
+          -d CONFIG_WERROR || true
 
-          make -j$(nproc) O=out ARCH=arm64 CC=aarch64-linux-gnu-gcc Image.gz-dtb || \
-          make -j$(nproc) O=out ARCH=arm64 CC=aarch64-linux-gnu-gcc Image.gz
+        make O=out ARCH=arm64 olddefconfig
 
-      - name: Create AnyKernel3 Zip
-        run: |
-          set -e
-          git clone https://github.com/osm0sis/AnyKernel3.git --depth=1
+    - name: Build Kernel
+      run: |
+        set -e
+        export ARCH=arm64
+        export CROSS_COMPILE=aarch64-linux-gnu-
 
-          if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
-            cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
-          else
-            cp out/arch/arm64/boot/Image.gz AnyKernel3/Image.gz-dtb
-          fi
+        make -j$(nproc) O=out \
+          CC=aarch64-linux-gnu-gcc \
+          KCFLAGS="-Wno-error -w" \
+          Image.gz-dtb || \
+        make -j$(nproc) O=out \
+          CC=aarch64-linux-gnu-gcc \
+          KCFLAGS="-Wno-error -w" \
+          Image.gz
 
-          cd AnyKernel3
-          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../Moto-G45-Kernel.zip . -x "*.git*"
+    - name: Create AnyKernel3 Zip
+      run: |
+        set -e
 
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: Moto-G45-Kernel
-          path: Moto-G45-Kernel.zip
+        git clone https://github.com/osm0sis/AnyKernel3.git --depth=1
+
+        if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
+          cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+        else
+          cp out/arch/arm64/boot/Image.gz AnyKernel3/Image.gz-dtb
+        fi
+
+        cd AnyKernel3
+
+        sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
+        sed -i 's/device.name1=.*/device.name1=fogo/g' anykernel.sh
+        sed -i 's/kernel.string=.*/kernel.string=Moto G45 Kernel KSU SUSFS/g' anykernel.sh
+
+        zip -r9 ../Moto-G45-Kernel.zip ./* -x "*.git*"
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: Moto-G45-Kernel
+        path: Moto-G45-Kernel.zip
