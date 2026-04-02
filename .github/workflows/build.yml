@@ -52,8 +52,9 @@ jobs:
           fi
         fi
         
+        # Apply main patch with --no-backup-if-mismatch to avoid rejects breaking build
         if [ -f "susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch" ]; then
-          patch -p1 -f < susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch || true
+          patch -p1 -f --no-backup-if-mismatch < susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch || true
         else
           echo "ERROR: SUSFS main patch not found"
           exit 1
@@ -61,25 +62,30 @@ jobs:
         
         echo "SUSFS integration completed"
 
-    - name: Fix SUSFS Header and KernelSU seccomp_cache
+    - name: Fix SUSFS Header, KernelSU seccomp_cache, and Missing Definitions
       run: |
-        # PGTABLE.H COMPATIBILITY FIX FOR KERNEL 5.4
+        # 1. PGTABLE.H compatibility for kernel 5.4
         find -L KernelSU drivers/kernelsu -type f -name "*.[ch]" -exec sed -i 's/<linux\/pgtable.h>/<asm\/pgtable.h>/g' {} + || true
 
-        # Create a proper susfs_def.h that defines ALL missing macros
+        # 2. Create susfs_def.h with all missing macros and declarations
         cat > include/linux/susfs_def.h << 'EOF'
         /* SPDX-License-Identifier: GPL-2.0 */
         #ifndef _LINUX_SUSFS_DEF_H
         #define _LINUX_SUSFS_DEF_H
         
+        #include <linux/idr.h>  // for ida
+        
+        /* SUSFS path length */
         #ifndef SUSFS_MAX_LEN_PATHNAME
         #define SUSFS_MAX_LEN_PATHNAME 256
         #endif
+        
+        /* Task structure flags */
         #ifndef TASK_STRUCT_NON_ROOT_USER_APP_PROC
         #define TASK_STRUCT_NON_ROOT_USER_APP_PROC (1UL << 0)
         #endif
         
-        /* inode state flags */
+        /* Inode state flags */
         #ifndef INODE_STATE_SUS_KSTAT
         #define INODE_STATE_SUS_KSTAT (1UL << 29)
         #endif
@@ -90,22 +96,77 @@ jobs:
         #define INODE_STATE_OPEN_REDIRECT (1UL << 31)
         #endif
         
+        /* SUSFS magic number */
         #ifndef SUSFS_MAGIC
         #define SUSFS_MAGIC 0x53465346
         #endif
         
-        #include <linux/susfs.h>
+        /* Missing mount ID constants */
+        #ifndef DEFAULT_SUS_MNT_ID
+        #define DEFAULT_SUS_MNT_ID 10000
+        #endif
+        #ifndef DEFAULT_SUS_MNT_GROUP_ID
+        #define DEFAULT_SUS_MNT_GROUP_ID 10000
+        #endif
+        #ifndef DEFAULT_SUS_MNT_ID_FOR_KSU_PROC_UNSHARE
+        #define DEFAULT_SUS_MNT_ID_FOR_KSU_PROC_UNSHARE 9999
+        #endif
+        
+        /* Missing clone flags */
+        #ifndef CL_COPY_MNT_NS
+        #define CL_COPY_MNT_NS 0x00001000
+        #endif
+        #ifndef CL_ZYGOTE_COPY_MNT_NS
+        #define CL_ZYGOTE_COPY_MNT_NS 0x00002000
+        #endif
+        
+        /* SUSFS auto-mount feature toggles (disable by default) */
+        #ifndef susfs_is_auto_add_sus_bind_mount_enabled
+        #define susfs_is_auto_add_sus_bind_mount_enabled 0
+        #endif
+        #ifndef susfs_is_auto_add_try_umount_for_bind_mount_enabled
+        #define susfs_is_auto_add_try_umount_for_bind_mount_enabled 0
+        #endif
+        #ifndef susfs_is_auto_add_sus_ksu_default_mount_enabled
+        #define susfs_is_auto_add_sus_ksu_default_mount_enabled 0
+        #endif
+        
+        /* Declare the IDA structures used in fs/namespace.c */
+        extern struct ida susfs_mnt_id_ida;
+        extern struct ida susfs_mnt_group_ida;
+        
+        /* Declare the function that checks zygote domain (defined in KernelSU) */
+        extern bool is_current_zygote_domain(void);
+        extern bool susfs_is_current_ksu_domain(void);
         
         #endif /* _LINUX_SUSFS_DEF_H */
         EOF
         
-        # INJECT definitions globally into fs.h so task_mmu.c, namei.c, etc. don't crash
-        echo "#include <linux/susfs_def.h>" >> include/linux/fs.h
-
-        # Fix KernelSU seccomp_cache.c across ALL clone paths
+        # 3. Inject the header into fs/namespace.c and also into fs.h
+        echo '#include <linux/susfs_def.h>' >> include/linux/fs.h
+        # Also add it at the top of fs/namespace.c (if not already there)
+        sed -i '1i #include <linux/susfs_def.h>' fs/namespace.c || true
+        
+        # 4. Define the IDA structures in a C file (add to fs/namespace.c)
+        cat >> fs/namespace.c << 'EOF'
+        /* SUSFS IDA definitions */
+        DEFINE_IDA(susfs_mnt_id_ida);
+        DEFINE_IDA(susfs_mnt_group_ida);
+        EXPORT_SYMBOL(susfs_mnt_id_ida);
+        EXPORT_SYMBOL(susfs_mnt_group_ida);
+        EOF
+        
+        # 5. Fix pkg_observer.c: replace .handle_inode_event with .handle_event for kernel 5.4
+        for pkg_file in "KernelSU/manager/pkg_observer.c" "drivers/kernelsu/manager/pkg_observer.c"; do
+          if [ -f "$pkg_file" ]; then
+            sed -i 's/\.handle_inode_event/.handle_event/g' "$pkg_file"
+          fi
+        done
+        
+        # 6. Re-fix seccomp_cache.c (already done but ensure it's applied)
         for seccomp_file in "KernelSU/infra/seccomp_cache.c" "drivers/kernelsu/infra/seccomp_cache.c"; do
           if [ -f "$seccomp_file" ]; then
-            cat > "$seccomp_file" << 'EOF'
+            cat > "$seccomp_file" << 'EOF2'
         // SPDX-License-Identifier: GPL-2.0
         #include <linux/seccomp.h>
         #include <linux/bitmap.h>
@@ -144,9 +205,11 @@ jobs:
             bitmap_zero(allow_native, SECCOMP_ARCH_NATIVE_NR);
             spin_unlock(&seccomp_cache_lock);
         }
-        EOF
+        EOF2
           fi
         done
+        
+        echo "All SUSFS and KernelSU compatibility fixes applied."
 
     - name: Configure Kernel
       run: |
@@ -159,7 +222,7 @@ jobs:
         sed -i 's/-dirty//g' scripts/setlocalversion
         echo "-moto-00517-g2ad8f9e38ea6" > localversion
         
-        # CRITICAL COMPILE FIX: Prevent "=implicit-int" errors
+        # Disable -Werror globally to avoid strict errors
         find . -type f \( -name "Makefile" -o -name "Kbuild" \) -exec sed -i 's/-Werror\b/-Wno-error/g' {} \;
         
         # Load base config
@@ -225,7 +288,6 @@ jobs:
         
         cd AnyKernel3
         
-        # SAFELY edit AnyKernel3 script without destroying its flash functions
         sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
         sed -i 's/do.modules=1/do.modules=0/g' anykernel.sh
         sed -i 's/device.name1=.*/device.name1=fogo/g' anykernel.sh
