@@ -23,75 +23,75 @@ jobs:
     - name: Integrate KernelSU
       run: |
         set -e
-        # Integrate KernelSU using the official setup script
+        echo "[+] Integrating KernelSU"
         curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash -s main
-        
-        # In some builds, KernelSU stays in the root. We move it to drivers/ for better compatibility.
-        if [ -d "KernelSU" ]; then
+
+        # FIX: Do NOT move if already inside drivers
+        if [ -d "KernelSU" ] && [ ! -d "drivers/kernelsu" ]; then
           mv KernelSU drivers/kernelsu
         fi
 
     - name: Integrate SUSFS
       run: |
         set -e
+        echo "[+] Integrating SUSFS"
+
         git clone https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 --depth=1 susfs_src
 
-        # Copy SUSFS source files to the kernel tree
         cp susfs_src/kernel_patches/fs/susfs.c fs/ || true
         cp susfs_src/kernel_patches/include/linux/susfs.h include/linux/ || true
         cp susfs_src/kernel_patches/include/linux/susfs_def.h include/linux/ || true
 
-        # Apply SUSFS patches to the Kernel
         if [ -f susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch ]; then
           patch -p1 < susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch || true
         fi
 
-        # Apply SUSFS patches to KernelSU (Crucial for build success)
-        if [ -f susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch ]; then
+        if [ -d drivers/kernelsu ] && [ -f susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch ]; then
           cd drivers/kernelsu
           patch -p1 < ../../susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch || true
           cd ../..
         fi
 
     - name: Fix Kernel & KernelSU Compatibility
-# This section addresses the specific "implicit-function-declaration" and "pgtable" errors from your logs
       run: |
         set -e
 
-        # 1. Fix pgtable.h path for KernelSU (common in 5.4 kernels)
+        # Fix pgtable include
         find drivers/kernelsu -type f -name "*.[ch]" -exec sed -i 's#<linux/pgtable.h>#<asm/pgtable.h>#g' {} + || true
 
-        # 2. Fix pkg_observer.c for Kernel 5.4 API
+        # Fix pkg observer
         find drivers/kernelsu -name "pkg_observer.c" -exec sed -i 's/\.handle_inode_event/.handle_event/g' {} + || true
 
-        # 3. Prevent duplicate IDA definitions in namespace.c (Common cause of build failure)
-        if ! grep -q "DEFINE_IDA(susfs_mnt_id_ida)" fs/namespace.c; then
-          sed -i 's/DEFINE_IDA(mnt_group_ida);/DEFINE_IDA(mnt_group_ida);\nDEFINE_IDA(susfs_mnt_id_ida);\nDEFINE_IDA(susfs_mnt_group_ida);/' fs/namespace.c
+        # Prevent duplicate IDA
+        if ! grep -q "susfs_mnt_id_ida" fs/namespace.c; then
+          echo "Adding SUSFS IDA safely"
+          echo -e "\nDEFINE_IDA(susfs_mnt_id_ida);\nDEFINE_IDA(susfs_mnt_group_ida);" >> fs/namespace.c
         fi
 
-        # 4. Fix mount.h for SUSFS
+        # Fix mount struct
         if ! grep -q "susfs_mnt_id_backup" include/linux/mount.h; then
-          sed -i '/struct vfsmount {/a \	int susfs_mnt_id_backup;' include/linux/mount.h
+          sed -i '/struct vfsmount {/a \    int susfs_mnt_id_backup;' include/linux/mount.h
         fi
 
     - name: Configure Kernel
       run: |
         set -e
         export ARCH=arm64
-        
-        # Silence Werror globally in the Makefile
+
         sed -i 's/-Werror/-Wno-error/g' Makefile || true
 
-        # Generate config
         make O=out ARCH=arm64 vendor/fogos_defconfig
 
-        # Enable Required Modules
         ./scripts/config --file out/.config -e CONFIG_KERNELSU
         ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS
         ./scripts/config --file out/.config -e CONFIG_WLAN
+        ./scripts/config --file out/.config -e CONFIG_CFG80211
+        ./scripts/config --file out/.config -e CONFIG_WLAN_VENDOR_QCOM
+        ./scripts/config --file out/.config -e CONFIG_CNSS2
+
         ./scripts/config --file out/.config -d CONFIG_WERROR
         ./scripts/config --file out/.config -d CONFIG_DEBUG_INFO
-        
+
         make O=out ARCH=arm64 olddefconfig
 
     - name: Build Kernel
@@ -100,7 +100,6 @@ jobs:
         export ARCH=arm64
         export CROSS_COMPILE=aarch64-linux-gnu-
 
-        # Added -w to KCFLAGS to suppress the noisy warnings shown in your logs
         make -j$(nproc) O=out \
           ARCH=arm64 \
           CC=aarch64-linux-gnu-gcc \
@@ -117,7 +116,6 @@ jobs:
         set -e
         git clone https://github.com/osm0sis/AnyKernel3.git --depth=1
 
-        # Check which image was actually produced
         if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
           cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz-dtb
         else
@@ -125,9 +123,9 @@ jobs:
         fi
 
         cd AnyKernel3
-        # Patch anykernel.sh for your device
         sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
         sed -i 's/device.name1=.*/device.name1=fogo/g' anykernel.sh
+
         zip -r9 ../Moto-G45-Kernel-Fogos.zip . -x "*.git*"
 
     - name: Upload
