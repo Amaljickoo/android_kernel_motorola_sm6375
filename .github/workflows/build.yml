@@ -8,182 +8,102 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-    - name: Checkout Kernel Source
-      uses: actions/checkout@v4
-      with:
-        repository: Motorola-SM6375-Devs/android_kernel_motorola_sm6375
-        ref: sixteen
-        fetch-depth: 1
+      - name: Checkout Kernel Source
+        uses: actions/checkout@v4
+        with:
+          repository: Motorola-SM6375-Devs/android_kernel_motorola_sm6375
+          ref: sixteen
+          fetch-depth: 1
 
-    - name: Install Build Tools
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev gcc-aarch64-linux-gnu device-tree-compiler make cpio python3 lz4
+      - name: Install Build Tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev gcc-aarch64-linux-gnu device-tree-compiler make cpio python3 lz4 patch
 
-    - name: Integrate KernelSU
-      run: |
-        echo "Integrating KernelSU..."
-        curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash -s main
-        if [ ! -d "KernelSU" ] && [ ! -d "drivers/kernelsu" ]; then
-          echo "ERROR: KernelSU integration failed"
-          exit 1
-        fi
-        echo "KernelSU integrated successfully"
+      - name: Integrate KernelSU
+        run: |
+          set -e
+          echo "Integrating KernelSU"
+          curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash -s main
 
-    - name: Integrate SUSFS
-      run: |
-        echo "Integrating SUSFS..."
-        git clone https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 --depth=1 susfs_src
-        if [ ! -d "susfs_src" ]; then
-          echo "ERROR: Failed to clone SUSFS repository"
-          exit 1
-        fi
-        cp susfs_src/kernel_patches/fs/susfs.c fs/ 2>/dev/null || true
-        cp susfs_src/kernel_patches/include/linux/susfs.h include/linux/ 2>/dev/null || true
-        if [ -d "KernelSU" ]; then
-          if [ -f "susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" ]; then
-            cp susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch KernelSU/
-            cd KernelSU
-            patch -p1 < 10_enable_susfs_for_ksu.patch || true
-            cd ..
+      - name: Integrate SUSFS
+        run: |
+          set -e
+          echo "Integrating SUSFS"
+          git clone https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 --depth=1 susfs_src
+
+          cp susfs_src/kernel_patches/fs/susfs.c fs/ || true
+          cp susfs_src/kernel_patches/include/linux/susfs.h include/linux/ || true
+
+          if [ -f susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch ]; then
+            patch -p1 -f < susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch || true
           fi
-        fi
-        if [ -f "susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch" ]; then
-          patch -p1 -f --no-backup-if-mismatch < susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch || true
-        else
-          echo "ERROR: SUSFS main patch not found"
-          exit 1
-        fi
-        echo "SUSFS integration completed"
 
-    - name: Fix SUSFS KernelSU and Missing Kernel 5.4 Definitions
-      run: |
-        # 1. pgtable.h compatibility
-        find -L KernelSU drivers/kernelsu -type f -name "*.[ch]" -exec sed -i 's/<linux\/pgtable.h>/<asm\/pgtable.h>/g' {} + || true
+      - name: Fix Kernel Issues
+        run: |
+          set -e
 
-        # 2. Write susfs_def.h using python3 one-liner (no heredoc to avoid YAML indent issues)
-        python3 -c "open('include/linux/susfs_def.h','w').write('/* SPDX-License-Identifier: GPL-2.0 */\n#ifndef _LINUX_SUSFS_DEF_H\n#define _LINUX_SUSFS_DEF_H\n#include <linux/idr.h>\n#ifndef SUSFS_MAX_LEN_PATHNAME\n#define SUSFS_MAX_LEN_PATHNAME 256\n#endif\n#ifndef TASK_STRUCT_NON_ROOT_USER_APP_PROC\n#define TASK_STRUCT_NON_ROOT_USER_APP_PROC (1UL << 0)\n#endif\n#ifndef INODE_STATE_SUS_KSTAT\n#define INODE_STATE_SUS_KSTAT (1UL << 29)\n#endif\n#ifndef INODE_STATE_SUS_PATH\n#define INODE_STATE_SUS_PATH (1UL << 30)\n#endif\n#ifndef INODE_STATE_OPEN_REDIRECT\n#define INODE_STATE_OPEN_REDIRECT (1UL << 31)\n#endif\n#ifndef INODE_STATE_SUS_MOUNT\n#define INODE_STATE_SUS_MOUNT (1UL << 28)\n#endif\n#ifndef SUSFS_MAGIC\n#define SUSFS_MAGIC 0x53465346\n#endif\n#ifndef DEFAULT_SUS_MNT_ID\n#define DEFAULT_SUS_MNT_ID 10000\n#endif\n#ifndef DEFAULT_SUS_MNT_GROUP_ID\n#define DEFAULT_SUS_MNT_GROUP_ID 10000\n#endif\n#ifndef DEFAULT_SUS_MNT_ID_FOR_KSU_PROC_UNSHARE\n#define DEFAULT_SUS_MNT_ID_FOR_KSU_PROC_UNSHARE 9999\n#endif\n#ifndef CL_COPY_MNT_NS\n#define CL_COPY_MNT_NS 0x00001000\n#endif\n#ifndef CL_ZYGOTE_COPY_MNT_NS\n#define CL_ZYGOTE_COPY_MNT_NS 0x00002000\n#endif\n#ifndef TRY_UMOUNT_DEFAULT\n#define TRY_UMOUNT_DEFAULT 0\n#endif\n#ifndef TRY_UMOUNT_DETACH\n#define TRY_UMOUNT_DETACH MNT_DETACH\n#endif\n#ifndef MAGIC_MOUNT_WORKDIR\n#define MAGIC_MOUNT_WORKDIR \"/debug_ramdisk/.magicmount/work\"\n#endif\n#ifndef SUSFS_FAKE_CMDLINE_OR_BOOTCONFIG_SIZE\n#define SUSFS_FAKE_CMDLINE_OR_BOOTCONFIG_SIZE 4096\n#endif\n#ifndef SUS_SU_DISABLED\n#define SUS_SU_DISABLED 0\n#endif\n#ifndef SUS_SU_WITH_HOOKS\n#define SUS_SU_WITH_HOOKS 1\n#endif\n#ifndef SUS_SU_WITH_OVERLAY\n#define SUS_SU_WITH_OVERLAY 2\n#endif\n#ifndef susfs_is_auto_add_sus_bind_mount_enabled\n#define susfs_is_auto_add_sus_bind_mount_enabled 0\n#endif\n#ifndef susfs_is_auto_add_try_umount_for_bind_mount_enabled\n#define susfs_is_auto_add_try_umount_for_bind_mount_enabled 0\n#endif\n#ifndef susfs_is_auto_add_sus_ksu_default_mount_enabled\n#define susfs_is_auto_add_sus_ksu_default_mount_enabled 0\n#endif\nextern struct ida susfs_mnt_id_ida;\nextern struct ida susfs_mnt_group_ida;\nextern bool is_current_zygote_domain(void);\nextern bool susfs_is_current_ksu_domain(void);\n#endif\n')"
+          # Fix pgtable include
+          find KernelSU drivers/kernelsu -type f -name "*.c" -exec sed -i 's#<linux/pgtable.h>#<asm/pgtable.h>#g' {} + || true
 
-        # 3. Add susfs_mnt_id_backup field to struct vfsmount
-        if grep -q "susfs_mnt_id_backup" include/linux/mount.h; then
-          echo "Already exists"
-        else
-          sed -i '/struct vfsmount {/a \\tint susfs_mnt_id_backup;' include/linux/mount.h
-        fi
+          # Create minimal SUSFS header
+          mkdir -p include/linux
+          echo "#ifndef _LINUX_SUSFS_DEF_H" > include/linux/susfs_def.h
+          echo "#define _LINUX_SUSFS_DEF_H" >> include/linux/susfs_def.h
+          echo "#define SUSFS_MAGIC 0x53465346" >> include/linux/susfs_def.h
+          echo "#endif" >> include/linux/susfs_def.h
 
-        # 4. Inject susfs_def.h include into fs.h and namespace.c
-        echo '#include <linux/susfs_def.h>' >> include/linux/fs.h
-        sed -i '1i #include <linux/susfs_def.h>' fs/namespace.c || true
+          # Inject header safely
+          grep -q susfs_def include/linux/fs.h || echo '#include <linux/susfs_def.h>' >> include/linux/fs.h
 
-        # 5. Append IDA definitions to namespace.c
-        printf '\nDEFINE_IDA(susfs_mnt_id_ida);\nDEFINE_IDA(susfs_mnt_group_ida);\nEXPORT_SYMBOL(susfs_mnt_id_ida);\nEXPORT_SYMBOL(susfs_mnt_group_ida);\n' >> fs/namespace.c
+          # Disable Werror
+          find . -name Makefile -exec sed -i 's/-Werror/-Wno-error/g' {} + || true
 
-        # 6. Fix pkg_observer.c
-        for f in KernelSU/manager/pkg_observer.c drivers/kernelsu/manager/pkg_observer.c; do
-          [ -f "$f" ] && sed -i 's/\.handle_inode_event/.handle_event/g' "$f"
-        done
+      - name: Configure Kernel
+        run: |
+          set -e
+          export ARCH=arm64
 
-        # 7. Fix allowlist.c
-        for f in KernelSU/policy/allowlist.c drivers/kernelsu/policy/allowlist.c; do
-          [ -f "$f" ] && sed -i '1i #ifndef TWA_RESUME\n#define TWA_RESUME 0\n#endif' "$f"
-        done
+          make O=out ARCH=arm64 vendor/fogos_defconfig
 
-        # 8. Fix app_profile.c
-        for f in KernelSU/policy/app_profile.c drivers/kernelsu/policy/app_profile.c; do
-          [ -f "$f" ] && sed -i 's/atomic_set(&current->seccomp\.filter_count, 0);//g' "$f"
-        done
+          # KernelSU + SUSFS
+          ./scripts/config --file out/.config -e CONFIG_KERNELSU
+          ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS
 
-        # 9. Rewrite seccomp_cache.c using python3 one-liner
-        for f in KernelSU/infra/seccomp_cache.c drivers/kernelsu/infra/seccomp_cache.c; do
-          if [ -f "$f" ]; then
-            python3 -c "import sys; open(sys.argv[1],'w').write('// SPDX-License-Identifier: GPL-2.0\n#include <linux/seccomp.h>\n#include <linux/bitmap.h>\n#include \"seccomp_cache.h\"\n#ifndef SECCOMP_ARCH_NATIVE_NR\n#define SECCOMP_ARCH_NATIVE_NR 512\n#endif\nstatic DECLARE_BITMAP(allow_native, SECCOMP_ARCH_NATIVE_NR);\nstatic DEFINE_SPINLOCK(seccomp_cache_lock);\nvoid seccomp_cache_add_native(uint32_t syscall) {\n    if (syscall < SECCOMP_ARCH_NATIVE_NR) {\n        spin_lock(&seccomp_cache_lock);\n        set_bit(syscall, allow_native);\n        spin_unlock(&seccomp_cache_lock);\n    }\n}\nbool seccomp_cache_check_native(uint32_t syscall) {\n    bool allowed = false;\n    if (syscall < SECCOMP_ARCH_NATIVE_NR) {\n        spin_lock(&seccomp_cache_lock);\n        allowed = test_bit(syscall, allow_native);\n        spin_unlock(&seccomp_cache_lock);\n    }\n    return allowed;\n}\nvoid seccomp_cache_clear(void) {\n    spin_lock(&seccomp_cache_lock);\n    bitmap_zero(allow_native, SECCOMP_ARCH_NATIVE_NR);\n    spin_unlock(&seccomp_cache_lock);\n}\n')" "$f"
-            echo "Rewrote $f"
+          # WiFi configs
+          ./scripts/config --file out/.config -e CONFIG_WLAN
+          ./scripts/config --file out/.config -e CONFIG_WLAN_VENDOR_QCOM
+          ./scripts/config --file out/.config -e CONFIG_CFG80211
+          ./scripts/config --file out/.config -e CONFIG_CNSS2
+
+          make O=out ARCH=arm64 olddefconfig
+
+      - name: Build Kernel
+        run: |
+          set -e
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+
+          make -j$(nproc) O=out ARCH=arm64 CC=aarch64-linux-gnu-gcc Image.gz-dtb || \
+          make -j$(nproc) O=out ARCH=arm64 CC=aarch64-linux-gnu-gcc Image.gz
+
+      - name: Create AnyKernel3 Zip
+        run: |
+          set -e
+          git clone https://github.com/osm0sis/AnyKernel3.git --depth=1
+
+          if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
+            cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+          else
+            cp out/arch/arm64/boot/Image.gz AnyKernel3/Image.gz-dtb
           fi
-        done
 
-        # 10. Patch selinux/rules.c for kernel 5.4 (no .policy or .policy_mutex members)
-        for f in KernelSU/selinux/rules.c drivers/kernelsu/selinux/rules.c; do
-          if [ -f "$f" ]; then
-            sed -i 's/selinux_state\.policy_mutex/selinux_state.ss_mutex/g' "$f"
-            sed -i 's/struct selinux_policy \*policy = rcu_dereference(selinux_state\.policy)/struct selinux_ss *policy = selinux_state.ss/g' "$f"
-            sed -i 's/struct selinux_policy \*policy/struct selinux_ss *policy/g' "$f"
-            sed -i 's/rcu_dereference(selinux_state\.policy)/selinux_state.ss/g' "$f"
-            sed -i 's/selinux_state\.policy/selinux_state.ss/g' "$f"
-            echo "Patched $f"
-          fi
-        done
+          cd AnyKernel3
+          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
+          zip -r9 ../Moto-G45-Kernel.zip . -x "*.git*"
 
-        echo "All fixes applied."
-
-    - name: Configure Kernel
-      run: |
-        export ARCH=arm64
-        sed -i 's/^SUBLEVEL = .*/SUBLEVEL = 274/' Makefile
-        touch .scmversion
-        sed -i 's/echo "+"/#echo "+"/' scripts/setlocalversion
-        sed -i 's/-dirty//g' scripts/setlocalversion
-        echo "-moto-00517-g2ad8f9e38ea6" > localversion
-        find . -type f \( -name "Makefile" -o -name "Kbuild" \) -exec sed -i 's/-Werror\b/-Wno-error/g' {} \;
-        make O=out ARCH=arm64 vendor/fogos_defconfig
-        ./scripts/config --file out/.config -e CONFIG_KERNELSU
-        ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS
-        ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS_HAS_MAGIC_MOUNT
-        ./scripts/config --file out/.config -e CONFIG_MACH_SM6375
-        ./scripts/config --file out/.config -e CONFIG_ARCH_MOTO
-        ./scripts/config --file out/.config -e CONFIG_WLAN
-        ./scripts/config --file out/.config -e CONFIG_WLAN_VENDOR_QCOM
-        ./scripts/config --file out/.config -e CONFIG_CFG80211
-        ./scripts/config --file out/.config -m CONFIG_WCNSS_CORE
-        ./scripts/config --file out/.config -m CONFIG_WCNSS_CORE_PRONTO
-        ./scripts/config --file out/.config -e CONFIG_CNSS2
-        ./scripts/config --file out/.config -d CONFIG_MODULE_SIG
-        ./scripts/config --file out/.config -d CONFIG_MODULE_SIG_ALL
-        ./scripts/config --file out/.config -d CONFIG_MODULE_SIG_FORCE
-        ./scripts/config --file out/.config -d CONFIG_WERROR
-        ./scripts/config --file out/.config -d CONFIG_DEBUG_INFO
-        ./scripts/config --file out/.config -d CONFIG_DEBUG_INFO_REDUCED
-        make O=out ARCH=arm64 olddefconfig
-
-    - name: Build Kernel
-      run: |
-        export ARCH=arm64
-        export CROSS_COMPILE=aarch64-linux-gnu-
-        make -j$(nproc) O=out ARCH=arm64 \
-          CROSS_COMPILE=aarch64-linux-gnu- \
-          CC=aarch64-linux-gnu-gcc \
-          HOSTCC=gcc \
-          KCFLAGS="-Wno-error -w -Wno-unused-variable -Wno-unused-function" \
-          Image.gz-dtb || \
-        make -j$(nproc) O=out ARCH=arm64 \
-          CC=aarch64-linux-gnu-gcc \
-          KCFLAGS="-Wno-error -w -Wno-unused-variable -Wno-unused-function" \
-          Image.gz
-
-    - name: Create AnyKernel3 Zip
-      run: |
-        git clone https://github.com/osm0sis/AnyKernel3.git
-        if [ -f "out/arch/arm64/boot/Image.gz-dtb" ]; then
-          cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz-dtb
-        elif [ -f "out/arch/arm64/boot/Image.gz" ]; then
-          cp out/arch/arm64/boot/Image.gz AnyKernel3/Image.gz-dtb
-        else
-          echo "ERROR: No kernel image found"
-          exit 1
-        fi
-        cd AnyKernel3
-        sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-        sed -i 's/do.modules=1/do.modules=0/g' anykernel.sh
-        sed -i 's/device.name1=.*/device.name1=fogo/g' anykernel.sh
-        sed -i 's/device.name2=.*/device.name2=fogos/g' anykernel.sh
-        sed -i 's/device.name3=.*/device.name3=sm6375/g' anykernel.sh
-        sed -i 's/kernel.string=.*/kernel.string=Moto G45 Kernel - KernelSU + SUSFS/g' anykernel.sh
-        sed -i 's/supported.versions=.*/supported.versions=14-15/g' anykernel.sh
-        chmod 755 anykernel.sh
-        zip -r9 ../Moto-G45-Kernel.zip ./* -x "*.git*"
-        cd ..
-
-    - name: Upload Artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: Moto-G45-Kernel
-        path: Moto-G45-Kernel.zip
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Moto-G45-Kernel
+          path: Moto-G45-Kernel.zip
