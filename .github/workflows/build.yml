@@ -22,22 +22,13 @@ jobs:
     - name: Integrate KernelSU
       run: |
         set -e
-        # Clone KernelSU to get its setup script and necessary files
-        git clone https://github.com/tiann/KernelSU.git --depth=1 KernelSU_temp
+        # Use curl to get the setup script and immediately pipe it to bash to execute.
+        # This is the official and most reliable way to run the integration.
+        curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash
         
-        # Execute the setup script from the main kernel directory.
-        # This allows the script to correctly find the 'drivers' and other kernel folders.
-        bash KernelSU_temp/kernel/setup.sh
-        
-        # The setup script creates a 'KernelSU' directory. We move its contents to drivers/kernelsu
-        if [ -d "KernelSU" ] && [ ! -d "drivers/kernelsu" ]; then
-          mkdir -p drivers/kernelsu
-          cp -r KernelSU/* drivers/kernelsu/
-        fi
-        
-        # Clean up temporary files
-        rm -rf KernelSU_temp
-        rm -rf KernelSU
+        # The setup.sh script automatically creates the 'drivers/kernelsu' directory
+        # and patches the necessary Kconfig and Makefile files. No manual copying is needed.
+        echo "KernelSU integration complete."
 
     - name: Integrate SUSFS
       run: |
