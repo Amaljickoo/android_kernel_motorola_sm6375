@@ -23,7 +23,6 @@ jobs:
       run: |
         set -e
         curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash -s main
-        # Standardizing location to drivers/kernelsu
         if [ -d "KernelSU" ] && [ ! -d "drivers/kernelsu" ]; then
           mkdir -p drivers/kernelsu
           cp -r KernelSU/* drivers/kernelsu/
@@ -34,79 +33,74 @@ jobs:
       run: |
         set -e
         git clone https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 --depth=1 susfs_src
-        # Copy SUSFS headers and source
         cp susfs_src/kernel_patches/fs/susfs.c fs/ || true
         cp susfs_src/kernel_patches/include/linux/susfs.h include/linux/ || true
         cp susfs_src/kernel_patches/include/linux/susfs_def.h include/linux/ || true
-        # Apply SUSFS kernel patch
         if [ -f susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch ]; then
           patch -p1 -f < susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch || true
         fi
-        # Apply SUSFS KernelSU-specific patch
         if [ -d "drivers/kernelsu" ] && [ -f susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch ]; then
-          cd drivers/kernelsu
-          patch -p1 -f < ../../susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch || true
-          cd ../..
+          (cd drivers/kernelsu && patch -p1 -f < ../../susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch) || true
         fi
 
-    - name: Fix KernelSU + SUSFS for 5.4 Kernel (Critical)
+    - name: Fix KernelSU + SUSFS for 5.4 Kernel (FINAL FIX)
       run: |
         set -e
 
-        # === FIX FOR THE EXACT BUILD ERROR ===
-        # SECCOMP_ARCH_NATIVE_NR does not exist on 5.4 kernels
-        if [ -f drivers/kernelsu/infra/seccomp_cache.c ]; then
-          echo "=== Disabling seccomp cache for 5.4 compatibility ==="
-          # Comment out the problematic line
-          sed -i 's/DECLARE_BITMAP(allow_native, SECCOMP_ARCH_NATIVE_NR);/\/\/ DECLARE_BITMAP(allow_native, SECCOMP_ARCH_NATIVE_NR);/' drivers/kernelsu/infra/seccomp_cache.c
-          # Also disable the feature macro
-          sed -i 's/#define CONFIG_KERNELSU_SECCOMP_CACHE/#undef CONFIG_KERNELSU_SECCOMP_CACHE/' drivers/kernelsu/infra/seccomp_cache.c || true
-        fi
+        # === STRONG FIX FOR SECCOMP_CACHE ERROR ===
+        # Replace the entire seccomp_cache.c with a clean 5.4-compatible stub
+        cat > drivers/kernelsu/infra/seccomp_cache.c << 'EOF'
+        /* Stub for 5.4 kernel - seccomp cache is not supported */
+        #include <linux/seccomp.h>
 
-        # 1. Create missing linux/pgtable.h if it doesn't exist
+        /* No-op functions */
+        void ksu_seccomp_clear_cache(struct task_struct *task) { }
+        void ksu_seccomp_allow_cache(struct task_struct *task, int nr) { }
+        void ksu_seccomp_init_cache(struct task_struct *task) { }
+
+        /* Empty cache structure */
+        struct action_cache {
+            /* dummy */
+        };
+        EOF
+
+        echo "=== seccomp_cache.c replaced with 5.4 stub ==="
+
+        # Other compatibility fixes
         if [ ! -f include/linux/pgtable.h ]; then
           echo '#include <asm/pgtable.h>' > include/linux/pgtable.h
         fi
 
-        # 2. Fix sucompat.c header
         if [ -f drivers/kernelsu/feature/sucompat.c ]; then
           sed -i 's/#include <linux\/pgtable.h>/#include <asm\/pgtable.h>/' drivers/kernelsu/feature/sucompat.c
         fi
 
-        # 3. Fix KernelSU 5.4 API: handle_inode_event -> handle_event
         find drivers/kernelsu -name "*.c" -exec sed -i 's/\.handle_inode_event/.handle_event/g' {} + || true
 
-        # 4. Add susfs_mnt_id_backup to struct vfsmount
         if ! grep -q "susfs_mnt_id_backup" include/linux/mount.h; then
           sed -i '/struct vfsmount {/a \        int susfs_mnt_id_backup;' include/linux/mount.h
         fi
 
-        # 5. Inject SUSFS definitions
         grep -q "susfs_def.h" fs/namespace.c || sed -i '1i #include <linux/susfs_def.h>' fs/namespace.c
         if ! grep -q "susfs_mnt_id_ida" fs/namespace.c; then
           sed -i '/DEFINE_IDA(mnt_group_ida);/a DEFINE_IDA(susfs_mnt_id_ida);\nDEFINE_IDA(susfs_mnt_group_ida);' fs/namespace.c
         fi
 
-        # 6. Global header awareness for SUSFS
         grep -q "susfs_def.h" include/linux/fs.h || sed -i '/#define _LINUX_FS_H/a #include <linux/susfs_def.h>' include/linux/fs.h
 
     - name: Configure Kernel
       run: |
         set -e
         export ARCH=arm64
-        # Disable -Werror in all Makefiles to prevent WiFi drivers from failing on warnings
         find . -type f \( -name "Makefile" -o -name "Kbuild" \) -exec sed -i 's/-Werror\b/-Wno-error/g' {} \;
+
         make O=out ARCH=arm64 vendor/fogos_defconfig
 
-        # Enable KernelSU and SUSFS configs
         ./scripts/config --file out/.config -e CONFIG_KERNELSU
         ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS
         ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS_HAS_MAGIC_MOUNT
-
-        # Disable seccomp cache (critical for 5.4 kernel)
         ./scripts/config --file out/.config -d CONFIG_KERNELSU_SECCOMP_CACHE || true
 
-        # Enable required configs
         ./scripts/config --file out/.config -e CONFIG_SECCOMP
         ./scripts/config --file out/.config -e CONFIG_SECCOMP_FILTER
         ./scripts/config --file out/.config -e CONFIG_WLAN
@@ -117,7 +111,6 @@ jobs:
         ./scripts/config --file out/.config -e CONFIG_INET
         ./scripts/config --file out/.config -e CONFIG_IPV6
 
-        # Cleanup Debugging and Module Signing
         ./scripts/config --file out/.config -d CONFIG_WERROR
         ./scripts/config --file out/.config -d CONFIG_DEBUG_INFO
         ./scripts/config --file out/.config -d CONFIG_MODULE_SIG
@@ -130,7 +123,6 @@ jobs:
         set -e
         export ARCH=arm64
         export CROSS_COMPILE=aarch64-linux-gnu-
-        # -w silences all warnings, extra flags for maximum compatibility
         make -j$(nproc) O=out ARCH=arm64 \
           CC=aarch64-linux-gnu-gcc \
           KCFLAGS='-w -Wno-error -Wno-implicit-function-declaration -Wno-unused-function -Wno-unused-variable -Wno-unused-but-set-variable' \
@@ -150,7 +142,6 @@ jobs:
           cp out/arch/arm64/boot/Image.gz AnyKernel3/Image.gz-dtb
         fi
         cd AnyKernel3
-        # Device Identity Fixes
         sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
         sed -i 's/device.name1=.*/device.name1=fogo/g' anykernel.sh
         sed -i 's/device.name2=.*/device.name2=fogos/g' anykernel.sh
