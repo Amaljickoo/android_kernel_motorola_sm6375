@@ -1,4 +1,4 @@
-name: Moto G45 Fogos ULTIMATE FINAL
+name: Moto G45 Fogos SUKI-ULTRA
 
 on:
   workflow_dispatch:
@@ -20,15 +20,18 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev gcc-aarch64-linux-gnu device-tree-compiler make cpio python3 lz4 patch
 
-    - name: Integrate KernelSU (STABLE METHOD)
+    - name: Integrate SukiSU Ultra
       run: |
         set -e
-        curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash -s v0.9.5
+        # This now points to the official SukiSU Ultra setup script
+        curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash
 
-        # FIX: avoid move crash
+        # FIX: The setup script sometimes creates the directory in the wrong place.
+        # This ensures it's moved to the correct 'drivers' location if needed.
         if [ -d "KernelSU" ] && [ ! -d "drivers/kernelsu" ]; then
           mv KernelSU drivers/kernelsu
         fi
+        echo "SukiSU Ultra integration complete."
 
     - name: Integrate SUSFS (SAFE)
       run: |
@@ -39,52 +42,58 @@ jobs:
         cp susfs_src/kernel_patches/include/linux/susfs.h include/linux/ || true
         cp susfs_src/kernel_patches/include/linux/susfs_def.h include/linux/ || true
 
+        # Apply patch to kernel filesystem
         patch -p1 -f < susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch || true
 
+        # Apply patch to SukiSU to enable SUSFS support
         if [ -d "drivers/kernelsu" ]; then
           (cd drivers/kernelsu && patch -p1 -f < ../../susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch) || true
         fi
+        echo "SUSFS integration complete."
 
-    - name: CRITICAL FIXES (NO BUILD FAIL)
+    - name: CRITICAL FIXES for Kernel 5.4
       run: |
         set -e
 
-        # FIX 1: fsnotify API
+        # FIX 1: fsnotify API compatibility for Kernel 5.4
         find drivers/kernelsu -name "*.c" -exec sed -i 's/\.handle_inode_event/.handle_event/g' {} + || true
 
-        # FIX 2: remove broken seccomp
+        # FIX 2: Remove broken seccomp feature that fails on this kernel
         rm -f drivers/kernelsu/infra/seccomp_cache.c 2>/dev/null || true
 
-        # FIX 3: pgtable fix
+        # FIX 3: Correct pgtable header path for older kernels
         find drivers/kernelsu -type f -exec sed -i 's#<linux/pgtable.h>#<asm/pgtable.h>#g' {} + || true
 
-        # FIX 4: SUSFS safe include
+        # FIX 4: Make SUSFS header include conditional to prevent errors
         sed -i '/susfs_def.h/d' include/linux/fs.h
         sed -i '1i #ifdef CONFIG_KERNELSU_SUSFS\n#include <linux/susfs_def.h>\n#endif' include/linux/fs.h
 
-        # FIX 5: namespace safe patch
+        # FIX 5: Safely patch namespace.c for SUSFS
         grep -q "susfs_mnt_id_ida" fs/namespace.c || \
         sed -i '/DEFINE_IDA(mnt_group_ida);/a DEFINE_IDA(susfs_mnt_id_ida);\nDEFINE_IDA(susfs_mnt_group_ida);' fs/namespace.c
 
-        # FIX 6: mount struct
+        # FIX 6: Safely patch mount struct for SUSFS
         grep -q "susfs_mnt_id_backup" include/linux/mount.h || \
         sed -i '/struct vfsmount {/a \        int susfs_mnt_id_backup;' include/linux/mount.h
+        echo "All critical fixes applied."
 
     - name: Configure Kernel
       run: |
         set -e
         export ARCH=arm64
 
+        # Globally disable "warnings as errors" to prevent build failures on minor issues
         find . -type f \( -name Makefile -o -name Kbuild \) -exec sed -i 's/-Werror/-Wno-error/g' {} +
 
         make O=out ARCH=arm64 vendor/fogos_defconfig
 
+        # Enable SukiSU and its required features
         ./scripts/config --file out/.config -e CONFIG_KERNELSU
         ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS
         ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS_HAS_MAGIC_MOUNT
-
         ./scripts/config --file out/.config -d CONFIG_KERNELSU_SECCOMP_CACHE || true
 
+        # Ensure network drivers are enabled
         ./scripts/config --file out/.config -e CONFIG_WLAN
         ./scripts/config --file out/.config -e CONFIG_CFG80211
         ./scripts/config --file out/.config -e CONFIG_MAC80211
@@ -92,6 +101,7 @@ jobs:
         ./scripts/config --file out/.config -e CONFIG_IPV6
 
         make O=out ARCH=arm64 olddefconfig
+        echo "Kernel configuration complete."
 
     - name: Build Kernel
       run: |
@@ -99,6 +109,7 @@ jobs:
         export ARCH=arm64
         export CROSS_COMPILE=aarch64-linux-gnu-
 
+        echo "Starting kernel build..."
         make -j$(nproc) O=out \
           ARCH=arm64 \
           CC=aarch64-linux-gnu-gcc \
@@ -109,9 +120,11 @@ jobs:
           CC=aarch64-linux-gnu-gcc \
           KCFLAGS='-w -Wno-error' \
           Image.gz
+        echo "Build finished."
 
-    - name: Pack Zip
+    - name: Pack Flashable Zip
       run: |
+        set -e
         git clone https://github.com/osm0sis/AnyKernel3.git --depth=1
 
         if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
@@ -123,11 +136,15 @@ jobs:
         cd AnyKernel3
         sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
         sed -i 's/device.name1=.*/device.name1=fogo/g' anykernel.sh
+        # Update the kernel string to reflect the new build
+        sed -i 's/kernel.string=.*/kernel.string=Moto G45 Fogos SUKI-ULTRA by @Meta AI/g' anykernel.sh
+        
+        zip -r9 ../Moto-G45-Kernel-SUKI.zip . -x "*.git*"
+        echo "Zip created successfully."
+        cd ..
 
-        zip -r9 ../Moto-G45-Kernel-FINAL.zip . -x "*.git*"
-
-    - name: Upload
+    - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: Moto-G45-Kernel-FINAL
-        path: Moto-G45-Kernel-FINAL.zip
+        name: Moto-G45-Kernel-SUKI-ULTRA
+        path: Moto-G45-Kernel-SUKI.zip
