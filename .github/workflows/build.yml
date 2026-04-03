@@ -101,6 +101,10 @@ jobs:
         ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS
         ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS_HAS_MAGIC_MOUNT
 
+        # Enable seccomp (required by KernelSU's seccomp_cache.c)
+        ./scripts/config --file out/.config -e CONFIG_SECCOMP
+        ./scripts/config --file out/.config -e CONFIG_SECCOMP_FILTER
+
         # Restored Network, WiFi and issue fixes
         ./scripts/config --file out/.config -e CONFIG_WLAN
         ./scripts/config --file out/.config -e CONFIG_WLAN_VENDOR_QCOM
