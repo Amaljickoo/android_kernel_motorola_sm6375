@@ -58,26 +58,32 @@ jobs:
       run: |
         set -e
 
-        # 1. Fix pgtable for KernelSU (sucompat.c)
-        find drivers/kernelsu -type f -name "*.[ch]" -exec sed -i 's#<linux/pgtable.h>#<asm/pgtable.h>#g' {} + || true
+        # 1. Create missing linux/pgtable.h if it doesn't exist
+        if [ ! -f include/linux/pgtable.h ]; then
+          echo '#include <asm/pgtable.h>' > include/linux/pgtable.h
+        fi
 
-        # 2. Fix KernelSU 5.4 API: handle_inode_event -> handle_event
+        # 2. Directly patch sucompat.c to use asm/pgtable.h
+        if [ -f drivers/kernelsu/feature/sucompat.c ]; then
+          sed -i 's/#include <linux\/pgtable.h>/#include <asm\/pgtable.h>/' drivers/kernelsu/feature/sucompat.c
+        fi
+
+        # 3. Fix KernelSU 5.4 API: handle_inode_event -> handle_event
         find drivers/kernelsu -name "pkg_observer.c" -exec sed -i 's/\.handle_inode_event/.handle_event/g' {} + || true
 
-        # 3. Add susfs_mnt_id_backup to struct vfsmount safely
+        # 4. Add susfs_mnt_id_backup to struct vfsmount safely
         if ! grep -q "susfs_mnt_id_backup" include/linux/mount.h; then
           sed -i '/struct vfsmount {/a \	int susfs_mnt_id_backup;' include/linux/mount.h
         fi
 
-        # 4. Inject SUSFS definitions into namespace.c only if missing
+        # 5. Inject SUSFS definitions into namespace.c only if missing
         grep -q "susfs_def.h" fs/namespace.c || sed -i '1i #include <linux/susfs_def.h>' fs/namespace.c
         
         if ! grep -q "susfs_mnt_id_ida" fs/namespace.c; then
-          # Add definitions after standard IDA definitions
           sed -i '/DEFINE_IDA(mnt_group_ida);/a DEFINE_IDA(susfs_mnt_id_ida);\nDEFINE_IDA(susfs_mnt_group_ida);' fs/namespace.c
         fi
 
-        # 5. Global header awareness for SUSFS structures
+        # 6. Global header awareness for SUSFS structures
         grep -q "susfs_def.h" include/linux/fs.h || sed -i '/#define _LINUX_FS_H/a #include <linux/susfs_def.h>' include/linux/fs.h
 
     - name: Configure Kernel
