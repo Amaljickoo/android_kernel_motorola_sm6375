@@ -19,16 +19,32 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev gcc-aarch64-linux-gnu device-tree-compiler make cpio python3 lz4 patch
 
-    - name: Integrate KernelSU
+    - name: Integrate KernelSU (Manual & Robust)
       run: |
         set -e
-        # Use curl to get the setup script and immediately pipe it to bash to execute.
-        # This is the official and most reliable way to run the integration.
-        curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash
+        echo "Starting robust KernelSU integration..."
         
-        # The setup.sh script automatically creates the 'drivers/kernelsu' directory
-        # and patches the necessary Kconfig and Makefile files. No manual copying is needed.
-        echo "KernelSU integration complete."
+        # 1. Clone the KernelSU source files
+        git clone https://github.com/tiann/KernelSU.git --depth=1 KernelSU_source
+        
+        # 2. Create the target directory if it doesn't exist
+        mkdir -p drivers/kernelsu
+        
+        # 3. Copy the kernel-related files into the target directory
+        cp -r KernelSU_source/kernel/* drivers/kernelsu/
+        
+        # 4. Manually patch the build system to include KernelSU
+        # This adds the necessary 'source' line to drivers/Kconfig
+        echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
+        
+        # This adds the object directory to drivers/Makefile
+        echo 'obj-$(CONFIG_KERNELSU) += kernelsu/' >> drivers/Makefile
+        
+        # 5. Clean up the cloned source
+        rm -rf KernelSU_source
+        
+        echo "KernelSU files are now in place. Verification:"
+        ls -l drivers/kernelsu/Kconfig || (echo "Kconfig not found!" && exit 1)
 
     - name: Integrate SUSFS
       run: |
