@@ -43,30 +43,30 @@ jobs:
           (cd drivers/kernelsu && patch -p1 -f < ../../susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch) || true
         fi
 
-    - name: Fix KernelSU + SUSFS for 5.4 Kernel (FINAL FIX)
+    - name: Fix KernelSU + SUSFS for 5.4 Kernel (FINAL STRONG FIX)
       run: |
         set -e
 
-        # === STRONG FIX FOR SECCOMP_CACHE ERROR ===
-        # Replace the entire seccomp_cache.c with a clean 5.4-compatible stub
+        # === STRONG FIX FOR pkg_observer.c (handle_inode_event → handle_event) ===
+        echo "=== Fixing fsnotify API for 5.4 kernel ==="
+        find drivers/kernelsu -name "*.c" -exec sed -i 's/\.handle_inode_event/\.handle_event/g' {} + || true
+        # Extra explicit fix for the exact file causing the error
+        if [ -f drivers/kernelsu/manager/pkg_observer.c ]; then
+          sed -i 's/\.handle_inode_event = ksu_handle_inode_event,/\.handle_event = ksu_handle_inode_event,/' drivers/kernelsu/manager/pkg_observer.c
+        fi
+
+        # === seccomp_cache stub (already fixed before) ===
         cat > drivers/kernelsu/infra/seccomp_cache.c << 'EOF'
         /* Stub for 5.4 kernel - seccomp cache is not supported */
         #include <linux/seccomp.h>
-
-        /* No-op functions */
         void ksu_seccomp_clear_cache(struct task_struct *task) { }
         void ksu_seccomp_allow_cache(struct task_struct *task, int nr) { }
         void ksu_seccomp_init_cache(struct task_struct *task) { }
-
-        /* Empty cache structure */
-        struct action_cache {
-            /* dummy */
-        };
+        struct action_cache { };
         EOF
-
         echo "=== seccomp_cache.c replaced with 5.4 stub ==="
 
-        # Other compatibility fixes
+        # Other SUSFS compatibility fixes
         if [ ! -f include/linux/pgtable.h ]; then
           echo '#include <asm/pgtable.h>' > include/linux/pgtable.h
         fi
@@ -74,8 +74,6 @@ jobs:
         if [ -f drivers/kernelsu/feature/sucompat.c ]; then
           sed -i 's/#include <linux\/pgtable.h>/#include <asm\/pgtable.h>/' drivers/kernelsu/feature/sucompat.c
         fi
-
-        find drivers/kernelsu -name "*.c" -exec sed -i 's/\.handle_inode_event/.handle_event/g' {} + || true
 
         if ! grep -q "susfs_mnt_id_backup" include/linux/mount.h; then
           sed -i '/struct vfsmount {/a \        int susfs_mnt_id_backup;' include/linux/mount.h
