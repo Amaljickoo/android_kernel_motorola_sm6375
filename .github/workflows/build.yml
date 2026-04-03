@@ -22,32 +22,22 @@ jobs:
     - name: Integrate KernelSU
       run: |
         set -e
-        # Clone KernelSU into a temporary directory
+        # Clone KernelSU to get its setup script and necessary files
         git clone https://github.com/tiann/KernelSU.git --depth=1 KernelSU_temp
         
-        # Execute setup.sh from within the cloned KernelSU/kernel directory
-        # This will create the 'KernelSU' folder and integrate it into the main kernel source
-        # It's important that setup.sh is run from where it expects to be
-        (cd KernelSU_temp/kernel && curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash)
+        # Execute the setup script from the main kernel directory.
+        # This allows the script to correctly find the 'drivers' and other kernel folders.
+        bash KernelSU_temp/kernel/setup.sh
         
-        # Move the 'KernelSU' directory created by setup.sh to the 'drivers/kernelsu' path
-        # This handles the case where setup.sh might place it differently or for explicit structuring
-        if [ -d "KernelSU_temp/kernel/KernelSU" ] && [ ! -d "drivers/kernelsu" ]; then
+        # The setup script creates a 'KernelSU' directory. We move its contents to drivers/kernelsu
+        if [ -d "KernelSU" ] && [ ! -d "drivers/kernelsu" ]; then
           mkdir -p drivers/kernelsu
-          cp -r KernelSU_temp/kernel/KernelSU/* drivers/kernelsu/
-          echo "KernelSU files moved to drivers/kernelsu"
-        elif [ -d "KernelSU_temp/kernel/KernelSU" ]; then
-          echo "drivers/kernelsu already exists, ensuring KernelSU is integrated."
-          # If drivers/kernelsu already exists but might be empty or incomplete,
-          # this ensures files are copied. 'cp -r' handles existing files by overwriting.
-          cp -r KernelSU_temp/kernel/KernelSU/* drivers/kernelsu/
-        else
-          echo "KernelSU directory not found after setup.sh execution. Integration might have failed."
-          exit 1 # Exit with an error if KernelSU integration failed
+          cp -r KernelSU/* drivers/kernelsu/
         fi
         
-        # Clean up the temporary KernelSU clone
+        # Clean up temporary files
         rm -rf KernelSU_temp
+        rm -rf KernelSU
 
     - name: Integrate SUSFS
       run: |
