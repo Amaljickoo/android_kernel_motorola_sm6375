@@ -25,7 +25,7 @@ jobs:
         set -e
         curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash -s main
 
-        # Standardizing location to drivers/kernelsu for better build compatibility
+        # Standardizing location to drivers/kernelsu
         if [ -d "KernelSU" ] && [ ! -d "drivers/kernelsu" ]; then
           mkdir -p drivers/kernelsu
           cp -r KernelSU/* drivers/kernelsu/
@@ -37,67 +37,74 @@ jobs:
         set -e
         git clone https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 --depth=1 susfs_src
 
+        # Copy SUSFS headers and source
         cp susfs_src/kernel_patches/fs/susfs.c fs/ || true
         cp susfs_src/kernel_patches/include/linux/susfs.h include/linux/ || true
         cp susfs_src/kernel_patches/include/linux/susfs_def.h include/linux/ || true
 
+        # Apply SUSFS kernel patch
         if [ -f susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch ]; then
           patch -p1 -f < susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch || true
         fi
 
+        # Apply SUSFS KernelSU-specific patch
         if [ -d "drivers/kernelsu" ] && [ -f susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch ]; then
           cd drivers/kernelsu
           patch -p1 -f < ../../susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch || true
           cd ../..
         fi
 
-    - name: Fix KernelSU and SUSFS Compatibility (Restored Fixes)
+    - name: Fix KernelSU and SUSFS Compatibility
       run: |
         set -e
 
-        # 1. Fix pgtable (Restored specific fix for sucompat.c)
+        # 1. Fix pgtable for KernelSU (sucompat.c)
         find drivers/kernelsu -type f -name "*.[ch]" -exec sed -i 's#<linux/pgtable.h>#<asm/pgtable.h>#g' {} + || true
 
-        # 2. Fix pkg_observer.c: handle_inode_event -> handle_event
+        # 2. Fix KernelSU 5.4 API: handle_inode_event -> handle_event
         find drivers/kernelsu -name "pkg_observer.c" -exec sed -i 's/\.handle_inode_event/.handle_event/g' {} + || true
 
-        # 3. Restored safe mount.h edit for susfs_mnt_id_backup
-        grep -q "susfs_mnt_id_backup" include/linux/mount.h || \
+        # 3. Add susfs_mnt_id_backup to struct vfsmount safely
+        if ! grep -q "susfs_mnt_id_backup" include/linux/mount.h; then
           sed -i '/struct vfsmount {/a \	int susfs_mnt_id_backup;' include/linux/mount.h
-
-        # 4. Restored IDA and Header fixes for fs/namespace.c
-        grep -q "susfs_def.h" fs/namespace.c || sed -i '1i #include <linux/susfs_def.h>' fs/namespace.c
-        if ! grep -q "susfs_mnt_id_ida" fs/namespace.c; then
-          echo 'DEFINE_IDA(susfs_mnt_id_ida);' >> fs/namespace.c
-          echo 'DEFINE_IDA(susfs_mnt_group_ida);' >> fs/namespace.c
         fi
 
-        # 5. Restored header awareness in fs.h
+        # 4. Inject SUSFS definitions into namespace.c only if missing
+        grep -q "susfs_def.h" fs/namespace.c || sed -i '1i #include <linux/susfs_def.h>' fs/namespace.c
+        
+        if ! grep -q "susfs_mnt_id_ida" fs/namespace.c; then
+          # Add definitions after standard IDA definitions
+          sed -i '/DEFINE_IDA(mnt_group_ida);/a DEFINE_IDA(susfs_mnt_id_ida);\nDEFINE_IDA(susfs_mnt_group_ida);' fs/namespace.c
+        fi
+
+        # 5. Global header awareness for SUSFS structures
         grep -q "susfs_def.h" include/linux/fs.h || sed -i '/#define _LINUX_FS_H/a #include <linux/susfs_def.h>' include/linux/fs.h
 
-    - name: Configure Kernel (Restored Network/WiFi Fixes)
+    - name: Configure Kernel
       run: |
         set -e
         export ARCH=arm64
 
-        # Disable -Werror globally to ensure build completion
+        # Disable -Werror in all Makefiles to prevent WiFi drivers from failing on warnings
         find . -type f \( -name "Makefile" -o -name "Kbuild" \) -exec sed -i 's/-Werror\b/-Wno-error/g' {} \;
 
         make O=out ARCH=arm64 vendor/fogos_defconfig
 
-        # Enable KernelSU and SUSFS
+        # Enable KernelSU and SUSFS configs
         ./scripts/config --file out/.config -e CONFIG_KERNELSU
         ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS
         ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS_HAS_MAGIC_MOUNT
 
-        # Restored Network and WiFi Fixes
+        # Restored Network, WiFi and issue fixes
         ./scripts/config --file out/.config -e CONFIG_WLAN
         ./scripts/config --file out/.config -e CONFIG_WLAN_VENDOR_QCOM
         ./scripts/config --file out/.config -e CONFIG_CFG80211
         ./scripts/config --file out/.config -e CONFIG_CFG80211_WEXT
         ./scripts/config --file out/.config -e CONFIG_MAC80211
-
-        # Optimization and cleanup
+        ./scripts/config --file out/.config -e CONFIG_INET
+        ./scripts/config --file out/.config -e CONFIG_IPV6
+        
+        # Cleanup Debugging and Module Signing
         ./scripts/config --file out/.config -d CONFIG_WERROR
         ./scripts/config --file out/.config -d CONFIG_DEBUG_INFO
         ./scripts/config --file out/.config -d CONFIG_MODULE_SIG
@@ -111,7 +118,8 @@ jobs:
         export ARCH=arm64
         export CROSS_COMPILE=aarch64-linux-gnu-
 
-        # Use KCFLAGS in single quotes to prevent shell parsing errors with '='
+        # Use KCFLAGS with single quotes to ensure compiler options are passed correctly
+        # -w silences all warnings that might trigger build breaks in SM6375 vendor modules
         make -j$(nproc) O=out ARCH=arm64 \
           CC=aarch64-linux-gnu-gcc \
           KCFLAGS='-w -Wno-error -Wno-implicit-function-declaration' \
@@ -121,7 +129,7 @@ jobs:
           KCFLAGS='-w -Wno-error' \
           Image.gz
 
-    - name: Create AnyKernel3 Zip
+    - name: Create Flashable Zip
       run: |
         set -e
         git clone https://github.com/osm0sis/AnyKernel3.git --depth=1
@@ -133,7 +141,7 @@ jobs:
         fi
 
         cd AnyKernel3
-        # Device-specific identity
+        # Device Identity Fixes
         sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
         sed -i 's/device.name1=.*/device.name1=fogo/g' anykernel.sh
         sed -i 's/device.name2=.*/device.name2=fogos/g' anykernel.sh
@@ -141,10 +149,10 @@ jobs:
         sed -i 's/kernel.string=.*/kernel.string=Moto G45 Fogos ULTIMATE V5 (KSU+SUSFS)/g' anykernel.sh
         sed -i 's/supported.versions=.*/supported.versions=14-15/g' anykernel.sh
 
-        zip -r9 ../Moto-G45-Kernel-Fogos.zip . -x "*.git*"
+        zip -r9 ../Moto-G45-Kernel-Fogos-ULTIMATE.zip . -x "*.git*"
 
     - name: Upload Artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: Moto-G45-Kernel-Fogos
-        path: Moto-G45-Kernel-Fogos.zip
+        name: Moto-G45-Kernel-ULTIMATE
+        path: Moto-G45-Kernel-Fogos-ULTIMATE.zip
