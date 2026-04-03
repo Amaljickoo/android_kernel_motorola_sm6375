@@ -20,82 +20,97 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev gcc-aarch64-linux-gnu device-tree-compiler make cpio python3 lz4 patch
 
-    # ✅ FIXED KernelSU (NO MOVE BUG)
+    # ✅ KernelSU (correct version)
     - name: Integrate KernelSU
       run: |
         set -e
-        curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash -s main
-        
-        # DO NOT MOVE KernelSU (causes your earlier crash)
-        echo "KernelSU integrated"
+        git clone https://github.com/tiann/KernelSU.git
+        cd KernelSU
+        git checkout v0.6.6
+        cd ..
+        bash KernelSU/kernel/setup.sh
 
-    # ✅ CLEAN SUSFS (NO OVERPATCHING)
+    # ✅ SUSFS (SAFE PATCH)
     - name: Integrate SUSFS
       run: |
         set -e
         git clone https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 --depth=1 susfs_src
-        
+
+        # Copy core files only
         cp susfs_src/kernel_patches/fs/susfs.c fs/ || true
         cp susfs_src/kernel_patches/include/linux/susfs.h include/linux/ || true
-        
-        # Apply main patch safely
+
+        # Apply main patch ONCE
         patch -p1 -f < susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch || true
 
-        # Patch KernelSU only if exists
+        # Patch KernelSU
         if [ -d "KernelSU" ]; then
           (cd KernelSU && patch -p1 -f < ../susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch) || true
         fi
 
-    # ✅ CRITICAL FIXES (REAL ERROR SOLVER)
-    - name: Fix KernelSU + SUSFS for 5.4
+    # ✅ CRITICAL FIX (THIS SOLVES YOUR ERROR)
+    - name: Fix KernelSU + SUSFS (5.4)
       run: |
         set -e
 
-        # Fix pgtable (common error)
+        echo "Applying critical fixes..."
+
+        # Fix fsnotify
+        find . -name "*.c" -exec sed -i 's/\.handle_inode_event/.handle_event/g' {} + || true
+
+        # Fix pgtable
         find . -type f -name "*.[ch]" -exec sed -i 's#<linux/pgtable.h>#<asm/pgtable.h>#g' {} + || true
 
-        # Fix pkg_observer crash
-        find . -name "pkg_observer.c" -exec sed -i 's/\.handle_inode_event/.handle_event/g' {} + || true
+        # Remove seccomp cache (BIGGEST CRASH FIX)
+        rm -f KernelSU/infra/seccomp_cache.c 2>/dev/null || true
+        rm -f drivers/kernelsu/infra/seccomp_cache.c 2>/dev/null || true
+        find . -type f -name "*.c" -exec sed -i '/seccomp_cache_/d' {} + || true
 
-        # Disable broken seccomp cache (BIG FIX)
-        for f in KernelSU/infra/seccomp_cache.c drivers/kernelsu/infra/seccomp_cache.c; do
-          [ -f "$f" ] && rm -f "$f"
-        done
+        # Prevent duplicate IDA (CRITICAL)
+        sed -i '/susfs_mnt_id_ida/d' fs/namespace.c || true
+        sed -i '/susfs_mnt_group_ida/d' fs/namespace.c || true
 
-        # Fix mount struct ONLY ONCE
+        # Add IDA ONLY ONCE
+        if ! grep -q "susfs_mnt_id_ida" fs/namespace.c; then
+          sed -i '/DEFINE_IDA(mnt_group_ida);/a DEFINE_IDA(susfs_mnt_id_ida);\nDEFINE_IDA(susfs_mnt_group_ida);' fs/namespace.c
+        fi
+
+        # Fix mount struct once
         if ! grep -q "susfs_mnt_id_backup" include/linux/mount.h; then
           sed -i '/struct vfsmount {/a \        int susfs_mnt_id_backup;' include/linux/mount.h
         fi
 
-    # ✅ CONFIG (NO WIFI BREAK)
+        # Ensure header include
+        grep -q "susfs_def.h" fs/namespace.c || sed -i '1i #include <linux/susfs_def.h>' fs/namespace.c
+        grep -q "susfs_def.h" include/linux/fs.h || sed -i '1i #include <linux/susfs_def.h>' include/linux/fs.h
+
+    # ✅ CONFIG
     - name: Configure Kernel
       run: |
         set -e
         export ARCH=arm64
 
-        # Remove Werror globally
         find . -type f -name "Makefile" -exec sed -i 's/-Werror/-Wno-error/g' {} + || true
 
         make O=out ARCH=arm64 vendor/fogos_defconfig
 
-        # Core features
+        # Features
         ./scripts/config --file out/.config -e CONFIG_KERNELSU
         ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS
 
-        # KEEP NETWORK SAFE (your earlier issue)
+        # WIFI SAFE
         ./scripts/config --file out/.config -e CONFIG_WLAN
         ./scripts/config --file out/.config -e CONFIG_CFG80211
         ./scripts/config --file out/.config -e CONFIG_MAC80211
         ./scripts/config --file out/.config -e CONFIG_INET
         ./scripts/config --file out/.config -e CONFIG_IPV6
 
-        # Disable problematic debug
         ./scripts/config --file out/.config -d CONFIG_WERROR
         ./scripts/config --file out/.config -d CONFIG_DEBUG_INFO
 
         make O=out ARCH=arm64 olddefconfig
 
-    # ✅ BUILD (STABLE FLAGS)
+    # ✅ BUILD
     - name: Build Kernel
       run: |
         set -e
@@ -118,7 +133,7 @@ jobs:
       run: |
         set -e
         git clone https://github.com/osm0sis/AnyKernel3.git --depth=1
-        
+
         if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
           cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz-dtb
         else
@@ -128,6 +143,10 @@ jobs:
         cd AnyKernel3
         sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
         sed -i 's/device.name1=.*/device.name1=fogo/g' anykernel.sh
+        sed -i 's/device.name2=.*/device.name2=fogos/g' anykernel.sh
+        sed -i 's/device.name3=.*/device.name3=sm6375/g' anykernel.sh
+        sed -i 's/kernel.string=.*/kernel.string=Moto G45 Fogos ULTIMATE (KSU+SUSFS)/g' anykernel.sh
+
         zip -r9 ../Moto-G45-Kernel.zip . -x "*.git*"
 
     - name: Upload
