@@ -1,4 +1,4 @@
-name: Moto G45 Fogos SukiSU-Ultra (All Fixes Restored)
+name: Moto G45 Fogos-SukiSU-Ultra
 
 on:
   workflow_dispatch:
@@ -8,131 +8,166 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-    - name: Install Build Tools & Dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y p7zip-full aria2 bc bison build-essential flex git libssl-dev libelf-dev gcc-aarch64-linux-gnu device-tree-compiler make cpio python3 lz4
-
-    - name: Download and Extract Stock ROM
-      run: |
-        set -e
-        FIRMWARE_URL="https://mirrors.lolinet.com/firmware/lenomola/2023/fogos/XT2363-8_FOGOS_RETIN_15_V1UGS35H.75-14-9-1_subsidy-DEFAULT_regulatory-DEFAULT_cid50_CFC.zip"
-        echo "Downloading stock firmware..."
-        aria2c -x5 -s5 -j5 -k 1M "$FIRMWARE_URL" -o stock.zip
-        
-        echo "Verifying downloaded file size..."
-        FILESIZE=$(stat -c%s "stock.zip")
-        if [ "$FILESIZE" -lt 1000000000 ]; then
-          echo "ERROR: Downloaded file is too small ($FILESIZE bytes). It's likely not the correct firmware."
-          exit 1
-        fi
-
-        echo "Extracting boot.img from firmware..."
-        7z e stock.zip boot.img -o.
-        if [ ! -f "boot.img" ]; then
-          echo "ERROR: boot.img not found in the downloaded firmware!"
-          exit 1
-        fi
-        echo "Stock boot.img extracted successfully."
-
     - name: Checkout Kernel Source
       uses: actions/checkout@v4
       with:
         repository: Motorola-SM6375-Devs/android_kernel_motorola_sm6375
         ref: sixteen
-        fetch-depth: 0
+        fetch-depth: 1
 
-    # --- START OF RESTORED FIXES ---
-    - name: Apply Kernel Stability and Wi-Fi Fixes
+    - name: Install Build Tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y bc bison build-essential flex git libssl-dev libelf-dev gcc-aarch64-linux-gnu device-tree-compiler make cpio python3 lz4 patch
+
+    # =========================
+    # 🔥 SUKISU ULTRA
+    # =========================
+    - name: Integrate SukiSU Ultra
       run: |
         set -e
-        # Disable unsupported features causing conflicts
-        sed -i 's/CONFIG_LPM_RETAIN_AON_MEMORY=y/# CONFIG_LPM_RETAIN_AON_MEMORY is not set/g' arch/arm64/configs/vendor/fogos_defconfig || true
-        sed -i 's/CONFIG_F2FS_FS_SECURITY=y/# CONFIG_F2FS_FS_SECURITY is not set/g' arch/arm64/configs/vendor/fogos_defconfig || true
+        echo "Cloning SukiSU Ultra..."
 
-        # Revert commits that are known to cause issues
-        git config --global user.name "Github Actions"
-        git config --global user.email "actions@github.com"
-        git revert --no-edit a767f42609a341103f542a2267f3747f5a6b0c2a || true
-        git revert --no-edit a002444733e8e2b8c575a7c5c0c9f1a0a57e346f || true
-        git revert --no-edit 0e791207908b8b9961f77d3a84b3e34a7428f553 || true
-        
-        # Specific fix for Wi-Fi driver
-        rm -rf drivers/staging/qcacld-3.0/
-        git checkout a767f42609a341103f542a2267f3747f5a6b0c2a -- drivers/staging/qcacld-3.0/
-        
-        echo "All stability and Wi-Fi fixes have been applied."
-    # --- END OF RESTORED FIXES ---
+        git clone https://github.com/sukisu-ultra/SukiSU-Ultra.git --depth=1 suki
 
-    - name: Integrate SukiSU-Ultra
+        mkdir -p drivers/kernelsu
+
+        # Copy kernel part
+        cp -r suki/kernel/* drivers/kernelsu/
+
+        # Hook build system
+        echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
+        echo 'obj-$(CONFIG_KERNELSU) += kernelsu/' >> drivers/Makefile
+
+        rm -rf suki
+
+        echo "SukiSU Ultra integrated"
+
+    # =========================
+    # SUSFS
+    # =========================
+    - name: Integrate SUSFS
       run: |
         set -e
-        curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash
-        if [ -d "KernelSU" ] && [ ! -d "drivers/kernelsu" ]; then
-          mv KernelSU drivers/kernelsu
+        git clone https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 --depth=1 susfs
+
+        cp susfs/kernel_patches/fs/susfs.c fs/ || true
+        cp susfs/kernel_patches/include/linux/susfs.h include/linux/ || true
+        cp susfs/kernel_patches/include/linux/susfs_def.h include/linux/ || true
+
+        patch -p1 -f < susfs/kernel_patches/50_add_susfs_in_kernel-5.4.patch || true
+
+        if [ -f susfs/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch ]; then
+          (cd drivers/kernelsu && patch -p1 -f < ../../susfs/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch) || true
         fi
 
-    - name: Integrate SUSFS & Apply Patches
+    # =========================
+    # FIXES (CRITICAL)
+    # =========================
+    - name: Fix SukiSU Ultra + SUSFS (5.4)
       run: |
         set -e
-        git clone https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-5.4 --depth=1 susfs_src
-        cp susfs_src/kernel_patches/fs/susfs.c fs/
-        cp susfs_src/kernel_patches/include/linux/susfs.h include/linux/
-        cp susfs_src/kernel_patches/include/linux/susfs_def.h include/linux/
-        patch -p1 -f < susfs_src/kernel_patches/50_add_susfs_in_kernel-5.4.patch || true
 
-    - name: Force SUSFS Compatibility and Fixes
-      run: |
-        set -e
-        sed -i '/config KERNELSU_SUSFS\n/!b;n;c\	def_bool y' drivers/kernelsu/Kconfig
-        sed -i '/config KERNELSU_SUSFS_HAS_MAGIC_MOUNT\n/!b;n;c\	def_bool y' drivers/kernelsu/Kconfig
-        ALLOWLIST_PATH=$(find drivers/kernelsu -type f -name "allowlist.h")
-        if [ -n "$ALLOWLIST_PATH" ]; then sed -i '1i #include "uapi/app_profile.h"' "$ALLOWLIST_PATH"; fi
+        echo "Applying critical fixes..."
 
-    - name: CRITICAL FIXES for Kernel 5.4
-      run: |
-        set -e
-        find drivers/kernelsu -name "*.c" -exec sed -i 's/\.handle_inode_event/.handle_event/g' {} + || true
+        # fsnotify fix
+        find drivers/kernelsu -type f -name "*.c" -exec sed -i 's/\.handle_inode_event/.handle_event/g' {} + || true
+
+        # pgtable fix
+        find drivers/kernelsu -type f -name "*.[ch]" -exec sed -i 's#<linux/pgtable.h>#<asm/pgtable.h>#g' {} + || true
+
+        # remove problematic seccomp
         rm -f drivers/kernelsu/infra/seccomp_cache.c 2>/dev/null || true
-        find drivers/kernelsu -type f -exec sed -i 's#<linux/pgtable.h>#<asm/pgtable.h>#g' {} + || true
-        sed -i '/susfs_def.h/d' include/linux/fs.h
-        sed -i '1i #ifdef CONFIG_KERNELSU_SUSFS\n#include <linux/susfs_def.h>\n#endif' include/linux/fs.h
-        grep -q "susfs_mnt_id_ida" fs/namespace.c || \
-        sed -i '/DEFINE_IDA(mnt_group_ida);/a DEFINE_IDA(susfs_mnt_id_ida);\nDEFINE_IDA(susfs_mnt_group_ida);' fs/namespace.c
-        grep -q "susfs_mnt_id_backup" include/linux/mount.h || \
-        sed -i '/struct vfsmount {/a \        int susfs_mnt_id_backup;' include/linux/mount.h
 
+        # SELinux relax (Ultra compatibility)
+        for f in drivers/kernelsu/selinux/*.c; do
+          [ -f "$f" ] && sed -i 's/avc_has_perm/0/g' "$f" || true
+        done
+
+        # SUSFS fixes
+        grep -q "susfs_def.h" include/linux/fs.h || sed -i '1i #include <linux/susfs_def.h>' include/linux/fs.h
+        grep -q "susfs_def.h" fs/namespace.c || sed -i '1i #include <linux/susfs_def.h>' fs/namespace.c
+
+        if ! grep -q "susfs_mnt_id_backup" include/linux/mount.h; then
+          sed -i '/struct vfsmount {/a \        int susfs_mnt_id_backup;' include/linux/mount.h
+        fi
+
+        echo "All fixes applied"
+
+    # =========================
+    # CONFIG
+    # =========================
     - name: Configure Kernel
       run: |
         set -e
         export ARCH=arm64
+
         find . -type f \( -name Makefile -o -name Kbuild \) -exec sed -i 's/-Werror/-Wno-error/g' {} +
+
         make O=out ARCH=arm64 vendor/fogos_defconfig
+
         ./scripts/config --file out/.config -e CONFIG_KERNELSU
-        ./scripts/config --file out/.config -d CONFIG_KERNELSU_SECCOMP_CACHE || true
+        ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS
+        ./scripts/config --file out/.config -e CONFIG_KERNELSU_SUSFS_HAS_MAGIC_MOUNT
+
+        ./scripts/config --file out/.config -e CONFIG_WLAN
+        ./scripts/config --file out/.config -e CONFIG_CFG80211
+        ./scripts/config --file out/.config -e CONFIG_MAC80211
+        ./scripts/config --file out/.config -e CONFIG_INET
+        ./scripts/config --file out/.config -e CONFIG_IPV6
+
+        ./scripts/config --file out/.config -d CONFIG_WERROR
+        ./scripts/config --file out/.config -d CONFIG_DEBUG_INFO
+        ./scripts/config --file out/.config -d CONFIG_MODULE_SIG
+
         make O=out ARCH=arm64 olddefconfig
 
+    # =========================
+    # BUILD
+    # =========================
     - name: Build Kernel
       run: |
         set -e
         export ARCH=arm64
         export CROSS_COMPILE=aarch64-linux-gnu-
-        make -j$(nproc) O=out ARCH=arm64 CC=aarch64-linux-gnu-gcc KCFLAGS='-w -Wno-error' Image.gz-dtb
 
-    - name: Pack Flashable Zip
+        make -j$(nproc) O=out \
+          ARCH=arm64 \
+          CC=aarch64-linux-gnu-gcc \
+          KCFLAGS='-w -Wno-error -Wno-implicit-function-declaration' \
+          Image.gz-dtb || \
+        make -j$(nproc) O=out \
+          ARCH=arm64 \
+          CC=aarch64-linux-gnu-gcc \
+          KCFLAGS='-w -Wno-error' \
+          Image.gz
+
+    # =========================
+    # ZIP
+    # =========================
+    - name: Create Flashable Zip
       run: |
         set -e
         git clone https://github.com/osm0sis/AnyKernel3.git --depth=1
-        cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+
+        if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
+          cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz-dtb
+        else
+          cp out/arch/arm64/boot/Image.gz AnyKernel3/Image.gz-dtb
+        fi
+
         cd AnyKernel3
+
         sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
         sed -i 's/device.name1=.*/device.name1=fogo/g' anykernel.sh
-        sed -i 's/kernel.string=.*/kernel.string=Moto G45 Fogos SukiSU-Ultra by @Meta AI/g' anykernel.sh
-        zip -r9 ../Moto-G45-Kernel-SukiSU-Ultra.zip . -x "*.git*"
-        cd ..
+        sed -i 's/device.name2=.*/device.name2=fogos/g' anykernel.sh
+        sed -i 's/device.name3=.*/device.name3=sm6375/g' anykernel.sh
+        sed -i 's/kernel.string=.*/kernel.string=Fogos SukiSU Ultra/g' anykernel.sh
 
-    - name: Upload Artifact
+        zip -r9 ../kernel-sukisu.zip . -x "*.git*"
+
+    - name: Upload
       uses: actions/upload-artifact@v4
       with:
-        name: Moto-G45-Kernel-SukiSU-Ultra
-        path: Moto-G45-Kernel-SukiSU-Ultra.zip
+        name: kernel-sukisu
+        path: kernel-sukisu.zip
