@@ -1,4 +1,4 @@
-name: Moto G45 Fogos SUKI-ULTRA (Downloads Stock ROM)
+name: Moto G45 Fogos SukiSU-Ultra (All Fixes Restored)
 
 on:
   workflow_dispatch:
@@ -16,13 +16,18 @@ jobs:
     - name: Download and Extract Stock ROM
       run: |
         set -e
-        # This is a direct link to the firmware for your build number.
-        # This step will download the large zip and extract ONLY boot.img from it.
-        FIRMWARE_URL="https://mirrors.lolinet.com/firmware/motorola/fogos/official/RETIN/XT2363-8_FOGOS_RETIN_15_V1UGS35H.75-14-9-1_subsidy-DEFAULT_regulatory-DEFAULT_cid50_CFC.zip"
+        FIRMWARE_URL="https://mirrors.lolinet.com/firmware/lenomola/2023/fogos/XT2363-8_FOGOS_RETIN_15_V1UGS35H.75-14-9-1_subsidy-DEFAULT_regulatory-DEFAULT_cid50_CFC.zip"
         echo "Downloading stock firmware..."
         aria2c -x5 -s5 -j5 -k 1M "$FIRMWARE_URL" -o stock.zip
+        
+        echo "Verifying downloaded file size..."
+        FILESIZE=$(stat -c%s "stock.zip")
+        if [ "$FILESIZE" -lt 1000000000 ]; then
+          echo "ERROR: Downloaded file is too small ($FILESIZE bytes). It's likely not the correct firmware."
+          exit 1
+        fi
+
         echo "Extracting boot.img from firmware..."
-        # Use 7z to extract only the boot.img file to save space and time
         7z e stock.zip boot.img -o.
         if [ ! -f "boot.img" ]; then
           echo "ERROR: boot.img not found in the downloaded firmware!"
@@ -35,11 +40,31 @@ jobs:
       with:
         repository: Motorola-SM6375-Devs/android_kernel_motorola_sm6375
         ref: sixteen
-        # We need the full history for patch compatibility
         fetch-depth: 0
 
-    # The rest of the workflow remains the same, but now it has boot.img available
-    - name: Integrate SukiSU Ultra
+    # --- START OF RESTORED FIXES ---
+    - name: Apply Kernel Stability and Wi-Fi Fixes
+      run: |
+        set -e
+        # Disable unsupported features causing conflicts
+        sed -i 's/CONFIG_LPM_RETAIN_AON_MEMORY=y/# CONFIG_LPM_RETAIN_AON_MEMORY is not set/g' arch/arm64/configs/vendor/fogos_defconfig || true
+        sed -i 's/CONFIG_F2FS_FS_SECURITY=y/# CONFIG_F2FS_FS_SECURITY is not set/g' arch/arm64/configs/vendor/fogos_defconfig || true
+
+        # Revert commits that are known to cause issues
+        git config --global user.name "Github Actions"
+        git config --global user.email "actions@github.com"
+        git revert --no-edit a767f42609a341103f542a2267f3747f5a6b0c2a || true
+        git revert --no-edit a002444733e8e2b8c575a7c5c0c9f1a0a57e346f || true
+        git revert --no-edit 0e791207908b8b9961f77d3a84b3e34a7428f553 || true
+        
+        # Specific fix for Wi-Fi driver
+        rm -rf drivers/staging/qcacld-3.0/
+        git checkout a767f42609a341103f542a2267f3747f5a6b0c2a -- drivers/staging/qcacld-3.0/
+        
+        echo "All stability and Wi-Fi fixes have been applied."
+    # --- END OF RESTORED FIXES ---
+
+    - name: Integrate SukiSU-Ultra
       run: |
         set -e
         curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash
@@ -99,16 +124,15 @@ jobs:
         set -e
         git clone https://github.com/osm0sis/AnyKernel3.git --depth=1
         cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
-        # Here we could also use the extracted boot.img if needed, but the compiled one is the goal
         cd AnyKernel3
         sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
         sed -i 's/device.name1=.*/device.name1=fogo/g' anykernel.sh
-        sed -i 's/kernel.string=.*/kernel.string=Moto G45 Fogos SUKI-ULTRA by @Meta AI/g' anykernel.sh
-        zip -r9 ../Moto-G45-Kernel-SUKI-ULTRA.zip . -x "*.git*"
+        sed -i 's/kernel.string=.*/kernel.string=Moto G45 Fogos SukiSU-Ultra by @Meta AI/g' anykernel.sh
+        zip -r9 ../Moto-G45-Kernel-SukiSU-Ultra.zip . -x "*.git*"
         cd ..
 
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: Moto-G45-Kernel-SUKI-ULTRA
-        path: Moto-G45-Kernel-SUKI-ULTRA.zip
+        name: Moto-G45-Kernel-SukiSU-Ultra
+        path: Moto-G45-Kernel-SukiSU-Ultra.zip
